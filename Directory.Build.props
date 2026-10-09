@@ -12,6 +12,7 @@
     <UseArtifactsOutput>true</UseArtifactsOutput>
     <RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot>
     <LibJpegTurboDir>$(RepoRoot)native\libjpeg-turbo\</LibJpegTurboDir>
+    <FivJpegDir>$(RepoRoot)native\fivjpeg\</FivJpegDir>
   </PropertyGroup>
 
   <ItemGroup>

@@ -8,4 +8,7 @@
     <Project Path="src/Fiv.Interop/Fiv.Interop.csproj" />
     <Project Path="src/Fiv.Render/Fiv.Render.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Fiv.Tests/Fiv.Tests.csproj" />
+  </Folder>
 </Solution>

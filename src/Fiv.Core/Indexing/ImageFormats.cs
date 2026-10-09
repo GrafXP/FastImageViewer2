@@ -28,6 +28,15 @@ public static class ImageFormats
         return false;
     }
 
+    public static bool IsJpegFileName(ReadOnlySpan<char> name)
+    {
+        int dot = name.LastIndexOf('.');
+        if (dot < 0) return false;
+        ReadOnlySpan<char> extension = name[(dot + 1)..];
+        return extension.Equals("jpg", StringComparison.OrdinalIgnoreCase) || extension.Equals("jpeg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals("jpe", StringComparison.OrdinalIgnoreCase) || extension.Equals("jfif", StringComparison.OrdinalIgnoreCase);
+    }
+
     // ASCII letters lower-cased, 8 bits per character; anything outside Latin-1 cannot match.
     static ulong Pack(ReadOnlySpan<char> extension)
     {

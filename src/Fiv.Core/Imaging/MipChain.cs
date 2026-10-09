@@ -39,6 +39,7 @@ public sealed unsafe class MipChain : IDisposable
             _stride[i] = i == 0 ? image.Stride : _width[i] * bytesPerPixel;
             if (i > 0) total += (long)_stride[i] * _height[i];
         }
+        ByteCount = total;
         _block = (byte*)NativeMemory.AlignedAlloc((nuint)Math.Max(total, 1), 64);
         _data[0] = image.Pixels;
         byte* next = _block;
@@ -124,8 +125,17 @@ public sealed unsafe class MipChain : IDisposable
         }
     }
 
+    /// <summary>Bytes held by the levels below the image itself.</summary>
+    public long ByteCount { get; private set; }
+
+    int _references = 1;
+
+    /// <summary>Counted ownership, as for <see cref="DecodedImage"/>.</summary>
+    public void AddReference() => Interlocked.Increment(ref _references);
+
     public void Dispose()
     {
+        if (Interlocked.Decrement(ref _references) != 0) return;
         NativeMemory.AlignedFree(_block);
         _block = null;
         GC.SuppressFinalize(this);

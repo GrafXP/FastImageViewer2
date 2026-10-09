@@ -1,8 +1,8 @@
 # FastImageViewer2 — Plan
 
-Status: **M0 closed; M1 working and measured, with a few items open; M2 started** (folder index
-and navigation; details under each milestone in section 9). Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
-Measured numbers are in sections 2.1 (M0) and 2.2 (the viewer itself). Build and keys: `README.md`.
+Status: **M0, M1 and M2 done and measured; M3 is next.** What each milestone left open is listed
+under it in section 9. Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
+Measured numbers: section 2.1 (M0), 2.2 (M1) and 2.3 (M2, the current state). Build and keys: `README.md`.
 
 FastImageViewer2 is a new image viewer for Windows. It takes its feature ideas from
 FastImageViewer (`../FastImageViewer`) but shares no code and no technology with it.
@@ -158,6 +158,71 @@ over, about 65 ms to decode the preview, the rest upload and waiting for the nex
 decode is bound by libjpeg-turbo's entropy decoder, so the remaining levers are embedded camera
 previews (for real camera files) and a smaller hand-over process.
 
+### 2.3 Measured in M2: navigation, index, and the viewer on its new pipeline
+
+Same machine and corpus; the machine was in use. Reproduce with `fivbench navigate`, `index`,
+`open` and `reopen`. Times end when `Present` returns; the frame is on screen at the next refresh.
+
+**Navigation**, folder of 40 different 12 MP JPEGs (about 3 MB each):
+
+| | Result |
+|---|---|
+| One step to the next or previous image, 0.6 s between steps (20 steps) | key to frame: median 1.3 ms, p90 1.9 ms, longest 4.2 ms |
+| Right arrow held, 30 key events per second (39 steps) | 39 of 39 images shown in 1.30 s = 30 images/s; key to frame: median 1.2 ms, longest 1.6 ms |
+
+With ten large JPEGs instead (12 to 80 MP, one progressive), single steps are the same (median
+1.2 ms, longest 8 ms); with the key held, 8 of 9 were shown and one took 83 ms — previews of
+50 MP and progressive files take longer to decode than a key repeat lasts.
+
+**Folder index** (directory metadata in the OS cache, median of 7):
+
+| Folder | Read | Natural sort | Total | Budget | .NET `GetFiles` + `FileInfo` | Sort with Explorer's `StrCmpLogicalW` |
+|---|---|---|---|---|---|---|
+| 950 images | 0.6 ms | 1.5 ms | 2.1 ms | | 10 ms | 2 ms |
+| 9,500 images | 5.3 ms | 18.1 ms | 23.8 ms | ≤ 50 ms | 74 ms | 20 ms |
+| 95,000 images | 37.0 ms | 14.4 ms | 51.7 ms | ≤ 500 ms | 2,241 ms | 297 ms |
+
+The 9,500 row ranged from 9 to 24 ms over three runs; at that size the cost of starting the
+parallel sort varies. Through the SMB redirector (the same folders as
+`\\localhost\I$\…`), reading 95,000 entries took 51 ms against 32 ms locally in the same run. That
+is the protocol without a network; a real share adds its latency once per directory buffer, and
+that has not been measured.
+
+**Header probes** (pixel size from the first 4 KB of a file): they agree with the decoders on
+all 15 corpus files. A first pass over files not opened before ran at 540–700 files per second
+on one thread, about 1.5 ms per file, nearly all of it in opening the file (the on-access virus
+scan, most likely; not verified); a second pass over the same files, on all cores, ran 16 to
+200 times faster. Dimensions
+for a file list therefore have to be read lazily, visible rows first, and kept — which is what
+the thumbnail cache of M3 is for. This also confirms the index design: it never opens a file.
+
+**Open, after the move to the decode pool** (compare section 2.2):
+
+| | M1 | Now |
+|---|---|---|
+| Cold start 24 MP, first pixels (GDI) | 93 ms | 100 ms (92–112) |
+| Cold start, first Direct3D frame (preview) | 275 ms | 255 ms |
+| Cold start, full resolution | 275 ms | 298 ms (291–309) |
+| Warm open 24 MP, first frame | 98 ms | 94 ms (86–102) |
+| Warm open 24 MP, full resolution | 158 ms | 160 ms |
+| Warm open 12 MP, first frame / full | 76 / 105 ms | 70 / 109 ms |
+| Warm open 50 MP, first frame / full | 176 / 299 ms | 182 / 325 ms |
+
+The cold-start figures moved with the machine's state between sessions (device creation alone
+ranged from 207 to 224 ms); nothing in them points at the new pipeline. Idle, showing an image:
+31 ms of CPU time in 10 s.
+
+**Against the budgets of section 2:**
+
+| Budget | Result |
+|---|---|
+| Next / previous, already prefetched: ≤ 1 frame (16 ms) | **1.3 ms** to `Present`, plus the wait for the refresh — met |
+| Arrow key held through 12 MP JPEGs: every image shown, ≥ 20 images/s | **39 of 39 at 30 images/s** — met |
+| Folder of 10,000 listed and sorted ≤ 50 ms | **24 ms** (9–24) — met |
+| Folder of 100,000 ≤ 500 ms | **52 ms** — met |
+| Cold start first pixels ≤ 200 ms; warm ≤ 100 ms; full ≤ 300 ms | 100 ms; 94 ms; 160 ms — met (warm p90 is 102 ms) |
+| Idle 0 % CPU | 0.03 % of one core — met |
+
 ## 3. Technology
 
 ### 3.1 Language: C#, C++, Rust or Go?
@@ -252,7 +317,7 @@ FastImageViewer2/
     Fiv.App/       Win32 window, single instance, ImGui panels, input, settings -> FastImageViewer2.exe
     Fiv.Cli/       headless compare for scripts (M7)
   shaders/         *.hlsl, compiled to bytecode at build
-  native/          libjpeg-turbo static library (later: optional decoders)
+  native/          libjpeg-turbo build script; fivjpeg, the cancellable JPEG decode shim (C)
   tests/Fiv.Tests/
   bench/Fiv.Bench/ decoder and index benchmarks, time-to-first-pixel harness, test-corpus generator
 ```
@@ -280,13 +345,22 @@ process start
   is painted with GDI, and Direct3D takes the window over when it is up.
 - **No conversions.** Decoders write BGRA8, R8, R16 or RGBA16/float directly; EXIF orientation is
   a transform in the shader, not a pixel shuffle.
-- **Upload.** Images become tiled textures (tiles ≤ 8192 px) so files beyond the 16384 px D3D11
-  limit work from day one. Mipmaps are generated on the GPU for clean down-scaling.
-- **Prefetch and cache.** The next and previous images (two ahead in the direction of travel) are
-  decoded in the background. Decoded images live in a true least-recently-used cache with a byte
-  budget (default 4 GB RAM, 2 GB VRAM, configurable).
-- **Rapid navigation.** While a key is held, each image is shown from whatever is ready
-  (thumbnail or preview); stale decodes are cancelled between scanlines.
+- **Upload.** Images become tiled textures (tiles ≤ 4096 px, overlapping by 64) so files beyond
+  the 16384 px D3D11 limit work from day one, and so that no single texture creation holds the
+  device lock for long. The mip levels are computed on the decode thread and the textures are
+  created complete on an upload thread; the UI thread never copies pixels.
+- **Decode pool.** Up to eight workers take the most urgent job first: the preview of the image
+  the user is at, then its full image, then the neighbours. Work that is no longer wanted is
+  cancelled, a JPEG decode within a few rows (through a small C shim over libjpeg's scanline
+  API, `native/fivjpeg`).
+- **Prefetch and cache.** Standing still, the neighbours wait for the target: first the target
+  alone, then previews of the next two images in the direction of travel and of the previous
+  one, then the full images of the two direct neighbours. Everything decoded stays in a
+  least-recently-used cache with byte budgets (4 GB RAM, 2 GB VRAM; `--cache-mb`, `--vram-mb`).
+- **Rapid navigation.** While a key is held, only previews are decoded, for the target and five
+  neighbours, four of them ahead. The picture on screen changes when the next one can be drawn
+  and never goes back, so every image decoded in time is seen and nothing flashes empty.
+  Full-resolution work resumes 150 ms after the last step.
 - **Pixel readout** comes from the CPU copy of the image — a constant-time lookup returning the
   true 8/16-bit/float values.
 
@@ -316,7 +390,10 @@ process start
   holding 256 px JPEG thumbnails plus each file's dimensions, validated by size and modified
   time. Re-opening a folder is one sequential read. Total cache size is capped.
 - **On the GPU** thumbnails live in a texture atlas, so a full grid is a handful of draw calls.
-- **Change tracking:** a debounced file-system watcher updates the index incrementally.
+- **Change tracking:** a file-system watcher notices changes; 400 ms after the first one the
+  folder is read again in the background and the index replaced. (Re-reading costs 50 ms for
+  100,000 files, so applying changes one by one was not worth its complexity.) A file whose size
+  or time changed is reloaded; if the current file is deleted, the one that takes its place is shown.
 
 ## 7. Design: rendering and compare pipeline
 
@@ -421,23 +498,29 @@ Found while building it, for M2:
 - Next / previous / first / last, prefetch, decoded-image cache, cancellation.
 - Exit: index budgets met; held-arrow-key budget met.
 
-*State 2026-10-09: first part built.* Opening one file reads and sorts its folder in the
-background (after the file's first pixels), and next / previous / Home / End then walk the folder.
-Measured with `fivbench index`, directory metadata in the OS cache, median of 7:
+*Closed 2026-10-09: exit criteria measured and met (section 2.3).* Built: the folder index
+(directory read without opening files, natural sort, sorting by date, size and type, filtered
+views over the same listing), the decode pool with priorities and cancellation, the cancellable
+JPEG decoder, tiled and cancellable uploads on their own thread, the image cache with RAM and
+VRAM budgets, staged prefetch, in-order display while a key is held, the folder watcher, header
+probes for six formats, and 85 unit tests (`dotnet test`), which found one real bug on their
+first run (the PNG signature in the header probe).
+Checked in the running viewer: stepping and holding the key through 40 images; a mixed folder
+of 15 files up to 80 MP, 16-bit and float; files added, the current file deleted, a file replaced
+while shown; sorting by date.
+**Left open:**
 
-| Folder | Read | Natural sort | Total | Budget | .NET `GetFiles` + `FileInfo` | Sort with Explorer's `StrCmpLogicalW` |
-|---|---|---|---|---|---|---|
-| 950 images | 0.7 ms | 2.2 ms | 3.0 ms | | 11 ms | 2 ms |
-| 9,500 images | 4.3 ms | 7.3 ms | 12.1 ms | ≤ 50 ms | 83 ms | 35 ms |
-| 95,000 images | 46.7 ms | 15.0 ms | 61.3 ms | ≤ 500 ms | 2,337 ms | 322 ms |
-
-Holding the right arrow (30 key events per second) through the 40 different 12 MP JPEGs showed
-31 of the 39 images in 1.3 s, about 24 images per second: the rate budget (≥ 20/s) is met, "every
-image shown" is not — navigation waits for the image being loaded and then jumps to wherever
-the key has got to. **Still to do in M2:** prefetch of the neighbours and the decoded-image cache
-(which is what closes that gap and gives the one-frame next/previous), cancellation of superseded
-decodes, header probes for dimensions, the file-system watcher, sorting by anything but name, and
-a network-share measurement.
+- Header probes are written, tested and timed, but nothing shows dimensions yet and sorting by
+  dimensions does not exist; both need the file list of M3, where the probes will be run lazily.
+- Filtered views have no user interface yet (M3: type-to-filter).
+- The cache evicts whole images. Dropping only the textures of an image whose pixels are still
+  in RAM would use video memory better.
+- Not measured: a real network share, a disk-cold folder (after a reboot), HDD.
+- `Present` blocks the UI thread until the previous frame is shown. Rendering only when the swap
+  chain is ready for a frame (a waitable swap chain) would remove that and cut input latency by
+  up to one refresh; worth doing before the compare modes, where smooth interaction matters most.
+- Stepping through very large or progressive JPEGs with the key held skips or delays some of
+  them (section 2.3). Real camera files carry embedded previews that would avoid the decode.
 
 **M3 — Thumbnails and browser**
 - Thumbnail pipeline, cache pack files, GPU atlas.

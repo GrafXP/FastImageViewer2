@@ -4,15 +4,20 @@
        exe; JIT builds (tests, benchmarks) load the DLLs from the output directory. -->
   <ItemGroup Condition="'$(OutputType)' != 'Library' and '$(PublishAot)' == 'true'">
     <DirectPInvoke Include="turbojpeg" />
+    <DirectPInvoke Include="fivjpeg" />
+    <NativeLibrary Include="$(FivJpegDir)bin\fivjpeg-static.lib" />
     <NativeLibrary Include="$(LibJpegTurboDir)lib\turbojpeg-static.lib" />
   </ItemGroup>
   <ItemGroup Condition="'$(OutputType)' != 'Library' and '$(PublishAot)' != 'true'">
     <Content Include="$(LibJpegTurboDir)bin\turbojpeg.dll" Link="turbojpeg.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <Content Include="$(FivJpegDir)bin\fivjpeg.dll" Link="fivjpeg.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
   <Target Name="CheckNativeDependencies" BeforeTargets="CoreCompile" Condition="'$(OutputType)' != 'Library'">
     <Error Condition="!Exists('$(LibJpegTurboDir)lib\turbojpeg-static.lib')"
            Text="libjpeg-turbo is not built. Run native\build-libjpeg-turbo.ps1 once." />
+    <Error Condition="!Exists('$(FivJpegDir)bin\fivjpeg-static.lib')"
+           Text="The JPEG decode shim is not built. Run native\build-fivjpeg.ps1 once." />
   </Target>
 
 </Project>

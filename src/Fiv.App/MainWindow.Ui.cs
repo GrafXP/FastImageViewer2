@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Text.Unicode;
 using Fiv.Imaging;
+using Fiv.Indexing;
 using Hexa.NET.ImGui;
 
 namespace Fiv.App;
@@ -49,14 +50,15 @@ internal sealed unsafe partial class MainWindow
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8 * scale, 2 * scale));
         if (ImGui.Begin("status"u8, PinnedWindow | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
         {
-            LoadedImage? image = _image;
+            LoadedImage? image = _shown;
             if (image == null)
             {
-                ImGui.TextDisabled(_files.Count == 0 ? "No image"u8 : "Loading"u8);
+                ImGui.TextDisabled(FileCount == 0 ? "No image"u8 : "Loading"u8);
             }
             else
             {
-                if (FileCount > 1 && Utf8.TryWrite(_utf8, $"{_fileIndex + 1}/{FileCount}", out int n))
+                int n;
+                if (FileCount > 1 && _shownIndex >= 0 && Utf8.TryWrite(_utf8, $"{_shownIndex + 1}/{FileCount}", out n))
                 {
                     Put(n);
                     Separator();
@@ -84,14 +86,27 @@ internal sealed unsafe partial class MainWindow
                     if (image.GpuFull == null && image.Error == null)
                     {
                         Separator();
-                        ImGui.TextDisabled(image.Preview != null ? "preview"u8 : "loading"u8);
+                        ImGui.TextDisabled("preview"u8);
                     }
+                }
+                if (_folder != null && (_sort != FolderSort.Name || _sortDescending))
+                {
+                    Separator();
+                    if (Utf8.TryWrite(_utf8, $"by {SortName(_sort)}{(_sortDescending ? ", descending" : "")}", out n)) Put(n);
                 }
             }
         }
         ImGui.End();
         ImGui.PopStyleVar();
     }
+
+    static string SortName(FolderSort sort) => sort switch
+    {
+        FolderSort.Modified => "date",
+        FolderSort.Size => "size",
+        FolderSort.Type => "type",
+        _ => "name",
+    };
 
     static string LayoutName(PixelLayout layout) => layout switch
     {
@@ -146,18 +161,21 @@ internal sealed unsafe partial class MainWindow
                 if (mark.Name == null || mark.Name == "main") continue;
                 if (Utf8.TryWrite(_utf8, $"{Perf.MillisecondsSinceStart(mark.Ticks),8:0.0}  {mark.Name}", out n)) Put(n);
             }
-            if (_image is { } image)
+            if (_shown is { } image)
             {
                 ImGui.Spacing();
                 ImGui.TextDisabled("this image, ms"u8);
-                if (image.PreviewInfo is { } preview && Utf8.TryWrite(_utf8, $"{preview.ReadMs,8:0.0}  read file\n{preview.DecodeMs,8:0.0}  decode preview {preview.Image?.Width ?? 0} x {preview.Image?.Height ?? 0}", out n)) Put(n);
-                if (image.FullInfo is { } full)
-                {
-                    if (image.PreviewInfo == null && Utf8.TryWrite(_utf8, $"{full.ReadMs,8:0.0}  read file", out n)) Put(n);
-                    if (Utf8.TryWrite(_utf8, $"{full.DecodeMs,8:0.0}  decode full\n{full.MipMs,8:0.0}  mip levels + statistics", out n)) Put(n);
-                }
-                if (image.GpuFull is { } gpuImage && Utf8.TryWrite(_utf8, $"{image.UploadMs,8:0.0}  upload {gpuImage.ByteCount / 1048576.0:0} MB, {gpuImage.Tiles.Count} texture(s)", out n)) Put(n);
+                if (Utf8.TryWrite(_utf8, $"{image.ReadMs,8:0.0}  read file", out n)) Put(n);
+                if (image.PreviewWidth > 0 && Utf8.TryWrite(_utf8, $"{image.PreviewDecodeMs,8:0.0}  decode preview {image.PreviewWidth} x {image.PreviewHeight}", out n)) Put(n);
+                if (image.FullDecodedAt != 0 && Utf8.TryWrite(_utf8, $"{image.FullDecodeMs,8:0.0}  decode full\n{image.MipMs,8:0.0}  mip levels + statistics", out n)) Put(n);
+                if (image.GpuFull is { } gpuImage && Utf8.TryWrite(_utf8, $"{image.UploadMs,8:0.0}  upload {gpuImage.ByteCount / 1048576.0:0} MB in {gpuImage.Tiles.Count} texture(s)", out n)) Put(n);
             }
+            ImGui.Spacing();
+            ImGui.TextDisabled("navigation, ms from key to first frame"u8);
+            if (Utf8.TryWrite(_utf8, $"{_lastStepMs,8:0.0}  last step\n{_stepMs / Math.Max(_steps, 1),8:0.0}  mean of {_steps}\n{_stepMaxMs,8:0.0}  longest", out n)) Put(n);
+            ImGui.Spacing();
+            ImGui.TextDisabled("cache"u8);
+            if (Utf8.TryWrite(_utf8, $"{_pipeline.Count,8}  images\n{_pipeline.CpuBytes / 1048576.0,8:0}  MB decoded\n{_pipeline.GpuBytes / 1048576.0,8:0}  MB textures", out n)) Put(n);
             if (_folder is { } folder)
             {
                 ImGui.Spacing();
@@ -172,7 +190,7 @@ internal sealed unsafe partial class MainWindow
 
     void DrawDisplayPanel()
     {
-        LoadedImage? image = _image;
+        LoadedImage? image = _shown;
         float scale = (float)_dpiScale;
         ImGui.SetNextWindowPos(new Vector2(_clientWidth - 10 * scale, 10 * scale), ImGuiCond.Always, new Vector2(1, 0));
         ImGui.SetNextWindowBgAlpha(0.9f);
@@ -225,13 +243,13 @@ internal sealed unsafe partial class MainWindow
     /// <summary>Errors, and the hint in an empty window, centred over the view.</summary>
     void DrawMessage()
     {
-        string? text = _image?.Error ?? (_image == null && _files.Count == 0 ? "Drop images here" : null);
+        string? text = _shown?.Error ?? (_shown == null && FileCount == 0 ? "Drop images here" : null);
         if (text == null || !Utf8.TryWrite(_utf8, $"{text}", out int n)) return;
         ImGui.SetNextWindowPos(new Vector2(ViewWidth / 2f, ViewHeight / 2f), ImGuiCond.Always, new Vector2(0.5f, 0.5f));
         ImGui.SetNextWindowBgAlpha(0.6f);
         if (ImGui.Begin("message"u8, PinnedWindow | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoInputs))
         {
-            if (_image?.Error != null && Utf8.TryWrite(_utf8.AsSpan(1024), $"{Path.GetFileName(_image.Path.AsSpan())}", out int m))
+            if (_shown?.Error != null && Utf8.TryWrite(_utf8.AsSpan(1024), $"{Path.GetFileName(_shown.Path.AsSpan())}", out int m))
             {
                 fixed (byte* name = &_utf8[1024]) ImGui.TextUnformatted(name, name + m);
             }

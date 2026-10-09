@@ -29,6 +29,9 @@ public static class PixelLayoutExtensions
 /// Pixels in native memory, in a layout the GPU accepts without conversion.
 /// <see cref="SourceWidth"/> and <see cref="SourceHeight"/> are the size of the file's image;
 /// they are larger than <see cref="Width"/> and <see cref="Height"/> for a reduced-size decode.
+/// Ownership is counted: whoever calls <see cref="AddReference"/> also calls <see cref="Dispose"/>,
+/// and the memory goes with the last one. That lets a worker keep reading the pixels of an
+/// image the UI thread has already dropped.
 /// </summary>
 public sealed unsafe class DecodedImage : IDisposable
 {
@@ -53,8 +56,13 @@ public sealed unsafe class DecodedImage : IDisposable
         Pixels = (byte*)NativeMemory.AlignedAlloc((nuint)Stride * (nuint)height, 64);
     }
 
+    int _references = 1;
+
+    public void AddReference() => Interlocked.Increment(ref _references);
+
     public void Dispose()
     {
+        if (Interlocked.Decrement(ref _references) != 0) return;
         NativeMemory.AlignedFree(Pixels);
         Pixels = null;
         GC.SuppressFinalize(this);

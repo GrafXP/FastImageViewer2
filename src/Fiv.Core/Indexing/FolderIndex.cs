@@ -43,22 +43,41 @@ public static class NaturalOrder
     static char Upper(char c) => (uint)(c - 'a') <= 'z' - 'a' ? (char)(c - 32) : c < 128 ? c : char.ToUpperInvariant(c);
 }
 
-/// <summary>The image files of a folder in natural name order. Built once on a background thread, then read-only.</summary>
+public enum FolderSort
+{
+    Name,
+    Modified,
+    Size,
+    Type,
+}
+
+/// <summary>Decides from a file name whether a file belongs to a filtered view.</summary>
+public delegate bool NameFilter(ReadOnlySpan<char> name);
+
+/// <summary>
+/// The image files of a folder in some order: a list of positions into a <see cref="FolderListing"/>.
+/// Sorting differently or filtering makes another index over the same listing; the file data is
+/// never copied. Immutable once built, so it can be handed between threads.
+/// </summary>
 public sealed class FolderIndex
 {
-    readonly int[] _order; // position in sorted order -> index in the listing
+    readonly int[] _order; // position in this view -> index in the listing
 
     public string Directory { get; }
     public FolderListing Listing { get; }
+    public FolderSort Sort { get; }
+    public bool Descending { get; }
     public int Count => _order.Length;
     public double EnumerateMs { get; }
     public double SortMs { get; }
 
-    FolderIndex(string directory, FolderListing listing, int[] order, double enumerateMs, double sortMs)
+    FolderIndex(string directory, FolderListing listing, int[] order, FolderSort sort, bool descending, double enumerateMs, double sortMs)
     {
         Directory = directory;
         Listing = listing;
         _order = order;
+        Sort = sort;
+        Descending = descending;
         EnumerateMs = enumerateMs;
         SortMs = sortMs;
     }
@@ -66,6 +85,9 @@ public sealed class FolderIndex
     public ReadOnlySpan<char> NameAt(int position) => Listing.Name(_order[position]);
     public string PathAt(int position) => Path.Join(Directory, NameAt(position));
     public long SizeAt(int position) => Listing.Size(_order[position]);
+
+    /// <summary>Last write time as a Windows FILETIME.</summary>
+    public long ModifiedAt(int position) => Listing.ModifiedFileTime(_order[position]);
 
     /// <summary>The position of a file name, or -1.</summary>
     public int Find(ReadOnlySpan<char> fileName)
@@ -75,17 +97,49 @@ public sealed class FolderIndex
         return -1;
     }
 
-    public static FolderIndex Build(string directory)
+    /// <summary>Reads the directory and sorts it.</summary>
+    public static FolderIndex Build(string directory, FolderSort sort = FolderSort.Name, bool descending = false)
     {
         long started = Stopwatch.GetTimestamp();
         FolderListing listing = FolderListing.Read(directory);
         double enumerateMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-
-        started = Stopwatch.GetTimestamp();
         int[] order = new int[listing.Count];
         for (int i = 0; i < order.Length; i++) order[i] = i;
-        ParallelSort(order, (x, y) => NaturalOrder.Compare(listing.Name(x), listing.Name(y)));
-        return new FolderIndex(directory, listing, order, enumerateMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        return Order(directory, listing, order, sort, descending, enumerateMs);
+    }
+
+    /// <summary>The same files in another order.</summary>
+    public FolderIndex Sorted(FolderSort sort, bool descending) =>
+        Order(Directory, Listing, (int[])_order.Clone(), sort, descending, EnumerateMs);
+
+    /// <summary>The files of this view whose names pass the filter, in this view's order.</summary>
+    public FolderIndex Where(NameFilter filter)
+    {
+        var kept = new List<int>(_order.Length);
+        foreach (int index in _order)
+            if (filter(Listing.Name(index))) kept.Add(index);
+        return new FolderIndex(Directory, Listing, kept.ToArray(), Sort, Descending, EnumerateMs, SortMs);
+    }
+
+    static FolderIndex Order(string directory, FolderListing listing, int[] order, FolderSort sort, bool descending, double enumerateMs)
+    {
+        long started = Stopwatch.GetTimestamp();
+        Comparison<int> byName = (x, y) => NaturalOrder.Compare(listing.Name(x), listing.Name(y));
+        Comparison<int> compare = sort switch
+        {
+            FolderSort.Modified => (x, y) => listing.ModifiedFileTime(x).CompareTo(listing.ModifiedFileTime(y)) is var c and not 0 ? c : byName(x, y),
+            FolderSort.Size => (x, y) => listing.Size(x).CompareTo(listing.Size(y)) is var c and not 0 ? c : byName(x, y),
+            FolderSort.Type => (x, y) => Extension(listing.Name(x)).CompareTo(Extension(listing.Name(y)), StringComparison.OrdinalIgnoreCase) is var c and not 0 ? c : byName(x, y),
+            _ => byName,
+        };
+        ParallelSort(order, descending ? (x, y) => compare(y, x) : compare);
+        return new FolderIndex(directory, listing, order, sort, descending, enumerateMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    static ReadOnlySpan<char> Extension(ReadOnlySpan<char> name)
+    {
+        int dot = name.LastIndexOf('.');
+        return dot < 0 ? default : name[(dot + 1)..];
     }
 
     /// <summary>Sorts chunks on all cores, then merges them pairwise. Small inputs are sorted directly.</summary>

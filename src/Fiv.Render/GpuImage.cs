@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Fiv.Imaging;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Direct3D11;
@@ -7,9 +6,15 @@ using Windows.Win32.Graphics.Dxgi.Common;
 namespace Fiv.Render;
 
 /// <summary>
-/// An image on the GPU, as one texture or, beyond the texture size limit, as overlapping tiles.
-/// Coordinates are in pixels of the image file, also for a reduced-size preview, so that a
-/// preview and the full image are positioned identically.
+/// An image on the GPU as one texture or as overlapping tiles. Coordinates are in pixels of the
+/// image file, also for a reduced-size preview, so that a preview and the full image are
+/// positioned identically.
+///
+/// A full-resolution image is cut into tiles of at most 4096 texels. Creating a texture holds
+/// Direct3D's device lock while its pixels are copied; in tiles that hold is bounded (about
+/// 15 ms each here) whatever the image size, and an upload nobody wants any more can stop
+/// between two tiles. Tiles of 2048 were measured too: 12 textures instead of 2 for a 24 MP
+/// image made the upload 10 ms slower.
 /// </summary>
 public sealed unsafe class GpuImage : IDisposable
 {
@@ -33,13 +38,16 @@ public sealed unsafe class GpuImage : IDisposable
         public int TextureHeight { get; init; }
     }
 
-    // Tiles advance by TileStep and overlap by TileOverlap on each side, 8192 texels at most.
-    // Both are multiples of 64, so the first seven mip levels of every tile are plain
-    // sub-rectangles of the image's mip chain.
-    const int MaxSingleTexture = 16384;
-    const int TileStep = 8064;
+    // With mips: tiles advance by TileStep and overlap by TileOverlap on each side. Both are
+    // multiples of 64, so the first seven mip levels of every tile are plain sub-rectangles of
+    // the image's mip chain, and filtering across a tile border reads the same texels on both sides.
+    const int MaxMippedTexture = 4096;
     const int TileOverlap = 64;
+    const int TileStep = MaxMippedTexture - 2 * TileOverlap;
     const int MaxTiledMipLevels = 7;
+
+    // Without mips (previews) nothing has to line up; one texture up to the Direct3D 11 limit.
+    const int MaxPlainTexture = 16384;
 
     public int Width { get; }
     public int Height { get; }
@@ -69,24 +77,33 @@ public sealed unsafe class GpuImage : IDisposable
     };
 
     /// <summary>
-    /// Creates the textures with their contents. Callable from any thread. The pixel memory is
+    /// Creates the textures with their contents. Callable from any thread; the pixel memory is
     /// only read during the call. Without <paramref name="mips"/> the textures have one level.
+    /// Returns null if <paramref name="cancel"/> became non-zero before the last tile.
     /// </summary>
-    public static GpuImage Create(ID3D11Device* device, DecodedImage image, MipChain? mips)
+    public static GpuImage? Create(ID3D11Device* device, DecodedImage image, MipChain? mips, int* cancel = null)
     {
         var result = new GpuImage(image);
         try
         {
-            if (image.Width <= MaxSingleTexture && image.Height <= MaxSingleTexture)
+            int maxSingle = mips != null ? MaxMippedTexture : MaxPlainTexture;
+            if (image.Width <= maxSingle && image.Height <= maxSingle)
             {
                 result.AddTile(device, image, mips, 0, 0, image.Width, image.Height, 0, 0, image.Width, image.Height,
                     mips?.LevelCount ?? 1);
                 return result;
             }
-            foreach (var (top, bottom) in Split(image.Height))
+            int step = mips != null ? TileStep : MaxPlainTexture - 2 * TileOverlap;
+            for (int top = 0; top < image.Height; top += step)
             {
-                foreach (var (left, right) in Split(image.Width))
+                for (int left = 0; left < image.Width; left += step)
                 {
+                    if (cancel != null && *cancel != 0)
+                    {
+                        result.Dispose();
+                        return null;
+                    }
+                    int right = Math.Min(image.Width, left + step), bottom = Math.Min(image.Height, top + step);
                     int x0 = Math.Max(0, left - TileOverlap), x1 = Math.Min(image.Width, right + TileOverlap);
                     int y0 = Math.Max(0, top - TileOverlap), y1 = Math.Min(image.Height, bottom + TileOverlap);
                     int levels = 1;
@@ -104,16 +121,6 @@ public sealed unsafe class GpuImage : IDisposable
             result.Dispose();
             throw;
         }
-    }
-
-    static IEnumerable<(int Start, int End)> Split(int size)
-    {
-        if (size <= MaxSingleTexture)
-        {
-            yield return (0, size);
-            yield break;
-        }
-        for (int start = 0; start < size; start += TileStep) yield return (start, Math.Min(size, start + TileStep));
     }
 
     void AddTile(ID3D11Device* device, DecodedImage image, MipChain? mips, int x, int y, int width, int height,

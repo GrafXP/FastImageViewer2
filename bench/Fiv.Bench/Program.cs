@@ -20,7 +20,8 @@ return command switch
         options.GetOrNull("--images")?.Split(';') ?? new[] { "jpeg_12mp.jpg", "jpeg_24mp.jpg", "jpeg_24mp_422.jpg", "jpeg_50mp.jpg", "png8_24mp.png" }
             .Select(name => Path.Combine(corpus, "single", name)).ToArray(),
         options.GetInt("--runs", 15), options.GetOrNull("--out")),
-    "index" => IndexCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
+    "navigate" => NavigateCommand.Run(repoRoot, options.Get("--folder", Path.Combine(corpus, "series", "jpeg_12mp")), options.GetOrNull("--out")),
+    "index" => IndexCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out"), options.Has("--quick")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     _ => Help(),
 };
@@ -35,7 +36,8 @@ static int Help()
                                                               cold start of publish\FastImageViewer2.exe, stage by stage
         fivbench reopen  [--images <a;b;...>] [--runs 15] [--out <file.md>]
                                                               open with the viewer already running (second process hands over)
-        fivbench index   [--root <dir>] [--reps 7] [--out <file.md>]
+        fivbench navigate [--folder <dir>] [--out <file.md>]  next/previous in a folder: single steps, and the arrow key held
+        fivbench index   [--root <dir>] [--reps 7] [--quick] [--out <file.md>]
                                                               read and sort the corpus folders of 1k / 10k / 100k files
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus

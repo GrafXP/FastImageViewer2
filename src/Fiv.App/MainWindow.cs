@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -7,7 +6,6 @@ using Fiv.Indexing;
 using Fiv.Render;
 using Windows.Win32;
 using Windows.Win32.Foundation;
-using Windows.Win32.Graphics.Direct3D11;
 using Windows.Win32.Graphics.Gdi;
 using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.Shell;
@@ -17,20 +15,34 @@ namespace Fiv.App;
 
 /// <summary>
 /// The viewer window. Start-up runs three things at once: this thread creates the window, one
-/// thread creates the Direct3D device (the slowest step), one reads and decodes the image. The
-/// first picture is painted with GDI if the device is not up yet; Direct3D takes over when it is.
-/// Nothing is drawn unless something changed: every change invalidates the window, and WM_PAINT,
-/// which Windows delivers once the input queue is empty, renders one frame.
+/// thread creates the Direct3D device (the slowest step), the decode pool reads and decodes the
+/// image. The first picture is painted with GDI if the device is not up yet; Direct3D takes over
+/// when it is. Nothing is drawn unless something changed: every change invalidates the window,
+/// and WM_PAINT, which Windows delivers once the input queue is empty, renders one frame.
+///
+/// Navigation: the window tells the <see cref="ImagePipeline"/> which image it is at and which
+/// neighbours to prepare. The picture on screen changes only when the next one can be drawn, so
+/// stepping to a prepared neighbour takes one frame and nothing ever flashes empty.
 /// </summary>
 internal sealed unsafe partial class MainWindow
 {
-    const uint WM_APP_LOADED = PInvoke.WM_APP + 1;
+    const uint WM_APP_PIPELINE = PInvoke.WM_APP + 1;
     const uint WM_APP_DEVICE = PInvoke.WM_APP + 2;
-    const uint WM_APP_UPLOADED = PInvoke.WM_APP + 3;
     const uint WM_APP_UI = PInvoke.WM_APP + 4;
     const uint WM_APP_FOLDER = PInvoke.WM_APP + 5;
-    const nuint ShowTimerId = 1;
+    const uint WM_APP_FOLDER_CHANGED = PInvoke.WM_APP + 6;
+    const nuint ShowTimerId = 1, SettleTimerId = 2, FolderTimerId = 3;
     const uint ShowTimeoutMs = 150;
+
+    /// <summary>Steps closer together than this count as running through the folder.</summary>
+    const double FastStepMs = 200;
+
+    /// <summary>After the last step, how long before full-resolution work starts again.</summary>
+    const uint SettleMs = 150;
+
+    /// <summary>A change in the folder is taken in this long after the first notification, so that a burst is read once.</summary>
+    const uint FolderRefreshMs = 400;
+
     const double WheelZoomStep = 1.2;
 
     static MainWindow? s_instance;
@@ -53,34 +65,33 @@ internal sealed unsafe partial class MainWindow
     ViewRenderer? _renderer;
     bool _presented; // a Direct3D frame has been presented; GDI can no longer draw into the window
 
-    readonly ImageLoader _loader;
-    readonly ConcurrentQueue<LoadResult> _results = new();
-    readonly ConcurrentQueue<(LoadedImage Image, GpuImage? Gpu, string? Error, double Milliseconds)> _uploads = new();
-    int _generation;
-
-    // The image on display, and the one it is replacing, which stays visible until the new one has pixels.
-    LoadedImage? _image;
-    LoadedImage? _outgoing;
-    ViewState _view, _outgoingView;
-    DisplaySettings _display = DisplaySettings.Default, _outgoingDisplay;
+    readonly ImagePipeline _pipeline;
+    readonly List<ImagePipeline.Want> _wants = [];
+    LoadedImage? _target;   // the image the user is at
+    LoadedImage? _shown;    // the image on screen: the target, or what was there before it is ready
+    int _shownIndex = -1;
+    LoadedImage? _autoWindowFor;
+    ViewState _view;
+    DisplaySettings _display = DisplaySettings.Default;
     bool _keepView;
 
     // What next/previous walks through: the files given explicitly, or, after a single file
     // was opened, the index of its folder once that has been read in the background.
     readonly List<string> _files = [];
     FolderIndex? _folder;
-    string? _folderFor; // the file whose folder is being, or has been, indexed
-    readonly ConcurrentQueue<(string File, FolderIndex? Index)> _folders = new();
+    string? _folderFor;   // the file whose folder is being, or has been, indexed
+    readonly System.Collections.Concurrent.ConcurrentQueue<(string File, FolderIndex? Index, FileSystemWatcher? Watcher)> _folderResults = new();
+    FolderSort _sort = FolderSort.Name;
+    bool _sortDescending;
+    FileSystemWatcher? _watcher;
+    bool _folderRefreshQueued, _folderRefreshRunning, _folderChangedAgain;
     int _fileIndex;
 
-    // While a load has not shown anything yet, further navigation only moves this target; the
-    // image being loaded is shown first. Holding an arrow key therefore always makes progress.
-    int _pendingIndex = -1;
-    bool _loadInFlight;
-
-    int FileCount => _folder?.Count ?? _files.Count;
-    string FileAt(int index) => _folder != null ? _folder.PathAt(index) : _files[index];
-    int TargetIndex => _pendingIndex >= 0 ? _pendingIndex : _fileIndex;
+    int _direction = 1;
+    bool _fast;
+    long _lastStep;
+    long _requested;      // when the current target was asked for
+    bool _requestShown;   // a frame with the current target has been presented
 
     bool _panning;
     int _mouseX = -1, _mouseY = -1;
@@ -91,28 +102,27 @@ internal sealed unsafe partial class MainWindow
     {
         _options = options;
         _files.AddRange(options.Files);
-        _loader = new ImageLoader(result =>
-        {
-            _results.Enqueue(result);
-            Post(WM_APP_LOADED);
-        });
+        _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE), (long)options.CacheMb << 20, (long)options.VramMb << 20);
     }
 
     int StatusBarHeight => (int)Math.Round(24 * _dpiScale);
     int ViewWidth => Math.Max(1, _clientWidth);
     int ViewHeight => Math.Max(1, _clientHeight - StatusBarHeight);
 
+    int FileCount => _folder?.Count ?? _files.Count;
+    string FileAt(int index) => _folder != null ? _folder.PathAt(index) : _files[index];
+
     public int Run()
     {
         s_instance = this;
         PlanWindow();
         StartDeviceThread();
-        if (_files.Count > 0) LoadCurrent();
+        if (_files.Count > 0) Request();
         CreateWindow();
         Perf.Stamp("window");
 
         // Whatever the workers finished before there was a window to notify.
-        OnLoaded();
+        OnPipeline();
         OnDeviceReady();
         if (_files.Count == 0) EnsureVisible();
         else PInvoke.SetTimer(_hwnd, ShowTimerId, ShowTimeoutMs, null);
@@ -151,7 +161,6 @@ internal sealed unsafe partial class MainWindow
         _clientWidth = _windowWidth - frameWidth;
         _clientHeight = _windowHeight - frameHeight;
     }
-
 
     void CreateWindow()
     {
@@ -194,6 +203,7 @@ internal sealed unsafe partial class MainWindow
     /// </summary>
     void Invalidate()
     {
+        if (_hwnd.IsNull) return; // before the window exists there is nothing to repaint
         _extraFrames = 2;
         PInvoke.InvalidateRect(_hwnd, (RECT*)null, false);
     }
@@ -201,7 +211,7 @@ internal sealed unsafe partial class MainWindow
     /// <summary>The window stays hidden until there is a picture to show in it, or the timeout passes.</summary>
     void EnsureVisible()
     {
-        if (_visible) return;
+        if (_visible || _hwnd.IsNull) return;
         _visible = true;
         PInvoke.KillTimer(_hwnd, ShowTimerId);
         PInvoke.ShowWindow(_hwnd, _options.NoActivate ? SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE : SHOW_WINDOW_CMD.SW_SHOW);
@@ -209,7 +219,8 @@ internal sealed unsafe partial class MainWindow
 
     void UpdateTitle()
     {
-        string title = _image == null ? "FastImageViewer2" : $"{System.IO.Path.GetFileName(_image.Path)} - FastImageViewer2";
+        if (_hwnd.IsNull) return;
+        string title = _shown == null ? "FastImageViewer2" : $"{System.IO.Path.GetFileName(_shown.Path)} - FastImageViewer2";
         fixed (char* text = title) PInvoke.SetWindowText(_hwnd, text);
     }
 
@@ -240,13 +251,12 @@ internal sealed unsafe partial class MainWindow
         _fullscreen = !_fullscreen;
     }
 
-    // ---------------------------------------------------------------- files
+    // ---------------------------------------------------------------- files and navigation
 
     void Open(IEnumerable<string> files)
     {
         var list = files.ToList();
         if (list.Count == 0) return;
-        _pendingIndex = -1;
         _files.Clear();
         _files.AddRange(list);
 
@@ -259,242 +269,343 @@ internal sealed unsafe partial class MainWindow
         }
         else
         {
+            StopWatching();
+            PInvoke.KillTimer(_hwnd, FolderTimerId);
+            _folderRefreshQueued = _folderRefreshRunning = _folderChangedAgain = false;
             _folder = null;
             _folderFor = null;
             _fileIndex = 0;
+            _shownIndex = -1; // positions of the old list mean nothing in the new one
         }
-        LoadCurrent();
+        _direction = 1;
+        _fast = false;
+        Request();
     }
 
     void Navigate(int index)
     {
         if (FileCount == 0) return;
         index = Math.Clamp(index, 0, FileCount - 1);
-        if (index == TargetIndex) return;
-        if (_loadInFlight)
-        {
-            _pendingIndex = index;
-            return;
-        }
+        if (index == _fileIndex) return;
+        long now = Stopwatch.GetTimestamp();
+        _direction = index > _fileIndex ? 1 : -1;
+        _fast = Stopwatch.GetElapsedTime(_lastStep, now).TotalMilliseconds < FastStepMs;
+        _lastStep = now;
         _fileIndex = index;
-        LoadCurrent();
+        Request();
+        // Full-resolution work is held back while the user runs through the folder.
+        PInvoke.SetTimer(_hwnd, SettleTimerId, SettleMs, null);
     }
 
-    /// <summary>Reads and sorts the folder of a file that was opened on its own, so that next and previous work.</summary>
+    /// <summary>The target changed: tell the pipeline, and show it at once if it is ready.</summary>
+    void Request()
+    {
+        _requested = Stopwatch.GetTimestamp();
+        _requestShown = false;
+        UpdateWanted();
+        AdvanceShown();
+    }
+
+    /// <summary>
+    /// What the pipeline should have ready. Standing still, the neighbours wait for the target,
+    /// so that nothing competes with the image the user is looking at:
+    ///   stage 0, target has no texture yet: the target alone;
+    ///   stage 1, target is on screen: previews of the next image in the direction of travel, the one after, and the previous one;
+    ///   stage 2, target is there in full: also the full images of the two direct neighbours.
+    /// Running through the folder (<see cref="_fast"/>), previews of the target and of five
+    /// neighbours at once, four of them ahead, and no full images at all.
+    /// </summary>
+    void UpdateWanted()
+    {
+        _wants.Clear();
+        if (FileCount == 0)
+        {
+            _target = null;
+            return;
+        }
+        _wantedStage = _fast ? 2 : PrefetchStage();
+        bool full = !_fast;
+        Want(_fileIndex, 0, full);
+        if (!_options.NoPrefetch && (_fast || _wantedStage >= 1))
+        {
+            bool neighbourFull = full && _wantedStage >= 2;
+            Want(_fileIndex + _direction, 1, neighbourFull);
+            Want(_fileIndex + 2 * _direction, 2, false);
+            Want(_fileIndex - _direction, 3, neighbourFull);
+            if (_fast)
+            {
+                Want(_fileIndex + 3 * _direction, 4, false);
+                Want(_fileIndex + 4 * _direction, 5, false);
+            }
+        }
+        _target = _pipeline.Request(CollectionsMarshal.AsSpan(_wants), ViewWidth, ViewHeight);
+    }
+
+    int _wantedStage;
+
+    int PrefetchStage()
+    {
+        LoadedImage? target = _pipeline.Find(FileAt(_fileIndex));
+        if (target == null) return 0;
+        if (target.GpuFull != null || target.Error != null) return 2;
+        return target.BestGpu != null ? 1 : 0;
+    }
+
+    void Want(int index, int rank, bool full)
+    {
+        if (index < 0 || index >= FileCount) return;
+        _wants.Add(_folder != null
+            ? new ImagePipeline.Want(_folder.PathAt(index), _folder.SizeAt(index), _folder.ModifiedAt(index), rank, full)
+            : new ImagePipeline.Want(_files[index], 0, 0, rank, full));
+    }
+
+    /// <summary>
+    /// An image can go on screen when there is something to draw for it: a texture, or, before
+    /// Direct3D has taken the window over, 8-bit pixels for GDI. A failed image shows its message.
+    /// </summary>
+    bool Showable(LoadedImage image) =>
+        image.Error != null || image.BestGpu != null || (!_presented && GdiSource(image) != null);
+
+    /// <summary>
+    /// Puts the target on screen if it is ready. If not, and the user is stepping through the
+    /// folder, shows the image nearest to the target that is ready, never one further back than
+    /// what is on screen: with a key held down, every image that gets decoded in time is seen.
+    /// </summary>
+    void AdvanceShown()
+    {
+        if (_target == null) return;
+        if (Showable(_target))
+        {
+            if (_shown != _target) Show(_target, _fileIndex);
+            _shownIndex = _fileIndex;
+            return;
+        }
+        if (_shown == null || _shownIndex < 0) return;
+        int step = Math.Sign(_fileIndex - _shownIndex);
+        if (step == 0) return;
+        for (int index = _fileIndex - step, tries = 0; index != _shownIndex && tries < 8 && index >= 0 && index < FileCount; index -= step, tries++)
+        {
+            if (_pipeline.Find(FileAt(index)) is { } image && Showable(image))
+            {
+                Show(image, index);
+                return;
+            }
+        }
+    }
+
+    void Show(LoadedImage image, int index)
+    {
+        LoadedImage? previous = _shown;
+        _shown = image;
+        _shownIndex = index;
+        _pipeline.Pinned = image;
+        if (previous is { Orphaned: true }) previous.Dispose();
+        _imagesShown++;
+
+        if (image.HasSize && !(_keepView && previous != null)) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+        _display.WindowLow = 0;
+        _display.WindowHigh = 1;
+        _autoWindowFor = null;
+        ApplyAutoWindow();
+        UpdateTitle();
+        EnsureVisible();
+        Invalidate();
+    }
+
+    /// <summary>16-bit and float images open with black and white at their smallest and largest value.</summary>
+    void ApplyAutoWindow()
+    {
+        if (_shown == null || _autoWindowFor == _shown || _shown.Full == null) return;
+        _autoWindowFor = _shown;
+        if (_shown.Layout is PixelLayout.Gray16 or PixelLayout.GrayFloat)
+        {
+            _display.WindowLow = _shown.ValueRange.Min;
+            _display.WindowHigh = _shown.ValueRange.Max;
+        }
+    }
+
+    /// <summary>The pipeline finished something. UI thread.</summary>
+    void OnPipeline()
+    {
+        if (!_pipeline.Drain(_shown, out bool shownChanged)) return;
+        if (_target is { } target)
+        {
+            if (target.FileReadAt != 0) Perf.StampOnce(ref _stampedRead, "file read", target.FileReadAt);
+            if (target.PreviewDecodedAt != 0) Perf.StampOnce(ref _stampedPreview, "preview decoded", target.PreviewDecodedAt);
+            if (target.FullDecodedAt != 0) Perf.StampOnce(ref _stampedFullDecoded, "full decoded", target.FullDecodedAt);
+        }
+        LoadedImage? before = _shown;
+        AdvanceShown(); // repaints if it changes the picture
+        ApplyAutoWindow();
+        // A frame for nothing would hold up the next real one by a refresh interval, so only
+        // repaint when the image on screen is the one that changed (its full version arrived).
+        if (_shown == before && shownChanged) Invalidate();
+        if (!_fast && !_options.NoPrefetch && _target != null && PrefetchStage() > _wantedStage) UpdateWanted();
+        StartFolderIndexIfDue();
+    }
+
+    /// <summary>
+    /// A file opened on its own gets its folder read once Direct3D has shown it (or it has
+    /// failed), not before: at a cold start the first picture and the graphics device come
+    /// first, and reading the folder while the device is being created measurably delayed it.
+    /// Without a usable GPU, the first GDI paint is the signal.
+    /// </summary>
+    void StartFolderIndexIfDue()
+    {
+        if (_files.Count != 1 || _folder != null || _folderFor != null || _target == null) return;
+        if (_target.FirstFrame != 0 || _target.Error != null || (_stampedGdi && _gpuError != null)) StartFolderIndex(_files[0]);
+    }
+
+    // ---------------------------------------------------------------- folder
+
+    /// <summary>Reads and sorts the folder of <paramref name="file"/> on a background thread.</summary>
     void StartFolderIndex(string file)
     {
+        if (System.IO.Path.GetDirectoryName(file) is not { Length: > 0 } directory) return;
         _folderFor = file;
+        _folderRefreshRunning = true;
+        FolderSort sort = _sort;
+        bool descending = _sortDescending;
+        bool watch = _watcher == null || !string.Equals(_watcher.Path, directory, StringComparison.OrdinalIgnoreCase);
         new Thread(() =>
         {
             FolderIndex? index = null;
+            FileSystemWatcher? watcher = null;
             try
             {
-                if (System.IO.Path.GetDirectoryName(file) is { Length: > 0 } directory) index = FolderIndex.Build(directory);
+                // The watcher first, so that a change between reading and watching is not missed.
+                // (Creating one takes some 10 ms the first time, which is why it happens here.)
+                if (watch) watcher = CreateWatcher(directory);
+                index = FolderIndex.Build(directory, sort, descending);
             }
             catch (IOException)
             {
                 // No index: the file stays the only one to show.
             }
-            _folders.Enqueue((file, index));
+            _folderResults.Enqueue((file, index, watcher));
             Post(WM_APP_FOLDER);
         }) { IsBackground = true, Name = "fiv index" }.Start();
     }
 
+    /// <summary>Takes in a folder index, the first one or a refresh after a change on disk.</summary>
     void OnFolderIndexed()
     {
-        while (_folders.TryDequeue(out var item))
+        while (_folderResults.TryDequeue(out var result))
         {
-            if (item.Index == null || item.File != _folderFor || _files.Count != 1 || _files[0] != item.File) continue;
-            int position = item.Index.Find(System.IO.Path.GetFileName(item.File.AsSpan()));
-            if (position < 0) continue; // not a file type the index lists
-            _folder = item.Index;
-            _fileIndex = position;
+            // A result for a file the user has since left (another Open) is ignored.
+            if (result.File != _folderFor)
+            {
+                result.Watcher?.Dispose();
+                continue;
+            }
+            _folderRefreshRunning = false;
+            if (result.Watcher != null)
+            {
+                StopWatching();
+                _watcher = result.Watcher;
+            }
+            if (result.Index != null) AdoptFolder(result.Index);
+        }
+        if (!_folderRefreshRunning && _folderChangedAgain)
+        {
+            _folderChangedAgain = false;
+            OnFolderChanged();
+        }
+    }
+
+    void AdoptFolder(FolderIndex index)
+    {
+        if (FileCount == 0) return;
+        string current = FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1));
+        ReadOnlySpan<char> name = System.IO.Path.GetFileName(current.AsSpan());
+        int position = index.Find(name);
+        if (_folder == null && position < 0) return; // the opened file is not of a type the index lists
+        if (index.Count == 0)
+        {
+            // Everything was deleted.
+            _folder = index;
+            _target = null;
+            _wants.Clear();
+            _pipeline.Request(default, ViewWidth, ViewHeight);
+            LoadedImage? last = _shown;
+            _shown = null;
+            _shownIndex = -1;
+            _pipeline.Pinned = null;
+            if (last is { Orphaned: true }) last.Dispose();
+            UpdateTitle();
             Invalidate();
+            return;
         }
-    }
-
-    void LoadCurrent()
-    {
-        _requested = Stopwatch.GetTimestamp();
-        _loadInFlight = true;
-        _generation = _loader.Load(FileAt(_fileIndex), ViewWidth, ViewHeight);
-    }
-
-    long _requested; // when the latest load was asked for
-
-    // ---------------------------------------------------------------- loading
-
-    /// <summary>Takes what the loader delivered. UI thread.</summary>
-    void OnLoaded()
-    {
-        bool changed = false;
-        while (_results.TryDequeue(out LoadResult? result))
-        {
-            if (result.Generation != _generation)
-            {
-                result.Image?.Dispose();
-                result.Mips?.Dispose();
-                continue;
-            }
-            changed = true;
-            _loadInFlight = false;
-            if (result.FileRead != 0) Perf.StampOnce(ref _stampedRead, "file read", result.FileRead);
-            bool isNew = _image == null || _image.Generation != result.Generation;
-            if (isNew) Replace(new LoadedImage(result.Path, result.Generation));
-            LoadedImage image = _image!;
-
-            switch (result.Stage)
-            {
-                case LoadStage.Failed:
-                    image.Error = result.Error;
-                    break;
-
-                case LoadStage.Preview:
-                    if (image.Full != null)
-                    {
-                        result.Image!.Dispose(); // the full decode finished first
-                        break;
-                    }
-                    image.Preview = result.Image;
-                    image.PreviewInfo = result;
-                    Describe(image, result);
-                    if (!_stampedPreview)
-                    {
-                        _stampedPreview = true;
-                        Perf.Stamp("preview decoded", result.Completed);
-                    }
-                    if (_gpu != null) image.GpuPreview = GpuImage.Create(_gpu.Device, image.Preview!, null);
-                    break;
-
-                case LoadStage.Full:
-                    image.Full = result.Image;
-                    image.Mips = result.Mips;
-                    image.FullInfo = result;
-                    image.ValueRange = result.ValueRange;
-                    Describe(image, result);
-                    if (!_stampedFullDecoded)
-                    {
-                        _stampedFullDecoded = true;
-                        Perf.Stamp("full decoded", result.Completed);
-                    }
-                    if (image.Layout is PixelLayout.Gray16 or PixelLayout.GrayFloat)
-                    {
-                        _display.WindowLow = image.ValueRange.Min;
-                        _display.WindowHigh = image.ValueRange.Max;
-                    }
-                    if (_gpu != null) StartUpload(image);
-                    break;
-            }
-
-            if (isNew)
-            {
-                if (image.HasSize && !(_keepView && _outgoing != null)) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
-                UpdateTitle();
-            }
-            if (image.Error != null) DropOutgoing();
-        }
-        if (!changed) return;
-        if (_image?.BestGpu != null) DropOutgoing();
-        EnsureVisible();
+        bool sameOrder = _folder != null && _folder.Sort == index.Sort && _folder.Descending == index.Descending;
+        _folder = index;
+        // The current file is gone: its former place in the list is the nearest thing to it.
+        _fileIndex = position >= 0 ? position : Math.Min(_fileIndex, index.Count - 1);
+        _shownIndex = _shown != null ? index.Find(System.IO.Path.GetFileName(_shown.Path.AsSpan())) : -1;
+        if (!sameOrder) _direction = 1;
+        if (position < 0) Request();
+        else UpdateWanted(); // same image, new neighbours; a changed file is reloaded because its size or time differs
+        AdvanceShown();
         Invalidate();
+    }
 
-        if (_files.Count == 1 && _folder == null && _folderFor == null) StartFolderIndex(_files[0]);
-        if (!_loadInFlight && _pendingIndex >= 0)
+    /// <summary>A watcher that wakes the UI thread on any change in the folder. Null if the folder cannot be watched. Any thread.</summary>
+    FileSystemWatcher? CreateWatcher(string directory)
+    {
+        try
         {
-            // Where the user went while this image was loading.
-            int next = _pendingIndex;
-            _pendingIndex = -1;
-            if (next != _fileIndex)
+            var watcher = new FileSystemWatcher(directory)
             {
-                _fileIndex = next;
-                LoadCurrent();
-            }
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                IncludeSubdirectories = false,
+            };
+            watcher.Created += (_, _) => Post(WM_APP_FOLDER_CHANGED);
+            watcher.Deleted += (_, _) => Post(WM_APP_FOLDER_CHANGED);
+            watcher.Renamed += (_, _) => Post(WM_APP_FOLDER_CHANGED);
+            watcher.Changed += (_, _) => Post(WM_APP_FOLDER_CHANGED);
+            watcher.Error += (_, _) => Post(WM_APP_FOLDER_CHANGED); // notifications were lost: read the folder again
+            watcher.EnableRaisingEvents = true;
+            return watcher;
+        }
+        catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            // A folder that cannot be watched is still browsable; it just does not update by itself.
+            return null;
         }
     }
 
-    static void Describe(LoadedImage image, LoadResult result)
+    void StopWatching()
     {
-        image.Width = result.Image!.SourceWidth;
-        image.Height = result.Image.SourceHeight;
-        image.Orientation = result.Orientation;
-        image.FileSize = result.FileSize;
+        _watcher?.Dispose();
+        _watcher = null;
     }
 
-    /// <summary>Makes <paramref name="image"/> current. The previous one stays on screen until the new one can be drawn.</summary>
-    void Replace(LoadedImage image)
+    /// <summary>Something in the folder changed. Notifications come in bursts, so the folder is re-read a little later, once.</summary>
+    void OnFolderChanged()
     {
-        DropOutgoing();
-        if (_image?.BestGpu != null)
+        if (_folder == null) return;
+        if (_folderRefreshRunning)
         {
-            _outgoing = _image;
-            _outgoingView = _view;
-            _outgoingDisplay = _display;
+            _folderChangedAgain = true;
+            return;
         }
-        else
-        {
-            _image?.Dispose();
-        }
-        _image = image;
-        _display.WindowLow = 0;
-        _display.WindowHigh = 1;
+        if (_folderRefreshQueued) return;
+        _folderRefreshQueued = true;
+        PInvoke.SetTimer(_hwnd, FolderTimerId, FolderRefreshMs, null);
     }
 
-    void DropOutgoing()
+    void RefreshFolder()
     {
-        _outgoing?.Dispose();
-        _outgoing = null;
+        PInvoke.KillTimer(_hwnd, FolderTimerId);
+        _folderRefreshQueued = false;
+        if (_folder == null || FileCount == 0) return;
+        StartFolderIndex(FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1)));
     }
 
-    /// <summary>Creates the full-resolution textures on a worker; the 100 MB copy must not block the UI thread.</summary>
-    void StartUpload(LoadedImage image)
+    void SetSort(FolderSort sort, bool descending)
     {
-        if (image.Uploading || image.GpuFull != null || image.Full == null) return;
-        image.Uploading = true;
-        nint device = (nint)_gpu!.Device;
-        new Thread(() =>
-        {
-            long started = Stopwatch.GetTimestamp();
-            try
-            {
-                GpuImage gpuImage = GpuImage.Create((ID3D11Device*)device, image.Full!, image.Mips);
-                _uploads.Enqueue((image, gpuImage, null, Stopwatch.GetElapsedTime(started).TotalMilliseconds));
-            }
-            catch (Exception e)
-            {
-                _uploads.Enqueue((image, null, e.Message, 0));
-            }
-            Post(WM_APP_UPLOADED);
-        }) { IsBackground = true, Name = "fiv upload" }.Start();
-    }
-
-    void OnUploaded()
-    {
-        while (_uploads.TryDequeue(out var upload))
-        {
-            LoadedImage image = upload.Image;
-            if (!image.UploadFinished())
-            {
-                upload.Gpu?.Dispose(); // the image was replaced while it uploaded
-                continue;
-            }
-            if (upload.Gpu == null)
-            {
-                image.Error = "Not enough video memory for the full image: " + upload.Error;
-            }
-            else
-            {
-                image.GpuFull = upload.Gpu;
-                image.UploadMs = upload.Milliseconds;
-                image.GpuPreview?.Dispose();
-                image.GpuPreview = null;
-                image.Preview?.Dispose();
-                image.Preview = null;
-            }
-            image.Mips?.Dispose(); // the GPU has its own copy now
-            image.Mips = null;
-            if (image == _image) DropOutgoing();
-        }
-        Invalidate();
+        _sort = sort;
+        _sortDescending = descending;
+        if (_folder != null) AdoptFolder(_folder.Sorted(sort, descending));
     }
 
     // ---------------------------------------------------------------- GPU
@@ -554,13 +665,7 @@ internal sealed unsafe partial class MainWindow
         _gpu.AttachWindow(_hwnd, _clientWidth, _clientHeight);
         _renderer = new ViewRenderer(_gpu);
         Perf.Stamp("swap chain");
-
-        if (_image is { } image)
-        {
-            if (image.Preview != null && image.GpuPreview == null && image.Full == null)
-                image.GpuPreview = GpuImage.Create(_gpu.Device, image.Preview, null);
-            StartUpload(image);
-        }
+        _pipeline.SetDevice(_gpu); // uploads of what is already decoded start now
         Invalidate();
     }
 
@@ -569,7 +674,7 @@ internal sealed unsafe partial class MainWindow
     void OnPaint()
     {
         // Until Direct3D has something to show, a picture GDI can paint must not be replaced by an empty frame.
-        bool useGpu = _renderer != null && (_presented || _image?.BestGpu != null || GdiSource(_image) == null);
+        bool useGpu = _renderer != null && (_presented || _shown?.BestGpu != null || GdiSource(_shown) == null);
         if (useGpu)
         {
             // Validate first: rendering may invalidate again to ask for a follow-up frame.
@@ -591,14 +696,8 @@ internal sealed unsafe partial class MainWindow
         long started = Stopwatch.GetTimestamp();
         gpu.BeginFrame(0.11f, 0.11f, 0.12f);
 
-        LoadedImage? drawn = _image?.BestGpu != null ? _image : _outgoing;
-        if (drawn?.BestGpu is { } gpuImage)
-        {
-            bool current = drawn == _image;
-            ViewState view = current ? _view : _outgoingView;
-            DisplaySettings display = current ? _display : _outgoingDisplay;
-            _renderer!.Draw(gpuImage, ImageToScreen(drawn, view), view.Zoom, display);
-        }
+        LoadedImage? drawn = _shown?.BestGpu != null ? _shown : null;
+        if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display);
         if (_ui != null)
         {
             _ui.NewFrame();
@@ -610,9 +709,58 @@ internal sealed unsafe partial class MainWindow
         gpu.Present(waitForVerticalBlank: true);
         _presented = true;
         long presented = Stopwatch.GetTimestamp();
-        if (_image?.FullFrame > 0)
+        CountFrame(started, presented);
+        if (drawn != null)
         {
-            // Frame statistics of the steady state, for --perf-log: loading is over, this is pan and zoom.
+            Perf.StampOnce(ref _stampedFirstFrame, "first frame (D3D)", presented);
+            if (drawn.FirstFrame == 0) drawn.FirstFrame = presented;
+            if (drawn == _target && !_requestShown)
+            {
+                _requestShown = true;
+                _requestFirstFrame = presented;
+                double ms = Stopwatch.GetElapsedTime(_requested, presented).TotalMilliseconds;
+                _steps++;
+                _stepMs += ms;
+                _stepMaxMs = Math.Max(_stepMaxMs, ms);
+                _lastStepMs = ms;
+                LogStep(drawn, ms);
+            }
+            if (drawn.GpuFull != null && drawn.FullFrame == 0)
+            {
+                drawn.FullFrame = presented;
+                if (drawn == _target)
+                {
+                    Perf.StampOnce(ref _stampedFullFrame, "full frame", presented);
+                    Loaded(drawn);
+                }
+            }
+        }
+
+        if (_extraFrames > 0)
+        {
+            _extraFrames--;
+            PInvoke.InvalidateRect(_hwnd, (RECT*)null, false);
+        }
+        if (drawn != null)
+        {
+            if (!_fast && !_options.NoPrefetch && PrefetchStage() > _wantedStage) UpdateWanted();
+            StartFolderIndexIfDue();
+        }
+    }
+
+    // ---------------------------------------------------------------- measurements
+
+    double _lastFrameMs, _lastStepMs;
+    int _frames, _intervals, _imagesShown, _steps;
+    double _frameCpuMs, _frameMaxCpuMs, _frameMaxMs, _intervalMs, _intervalMaxMs, _stepMs, _stepMaxMs;
+    long _lastPresented, _requestFirstFrame;
+    bool _perfOutWritten;
+
+    /// <summary>Frame statistics of the steady state, for --perf-log: loading is over, this is pan and zoom.</summary>
+    void CountFrame(long started, long presented)
+    {
+        if (_shown?.FullFrame > 0)
+        {
             double frameMs = Stopwatch.GetElapsedTime(started, presented).TotalMilliseconds;
             _frames++;
             _frameCpuMs += _lastFrameMs;
@@ -630,41 +778,30 @@ internal sealed unsafe partial class MainWindow
             }
         }
         _lastPresented = presented;
-        if (drawn != null) Perf.StampOnce(ref _stampedFirstFrame, "first frame (D3D)", presented);
-        if (drawn != null && drawn == _image)
-        {
-            if (drawn.PreviewFrame == 0)
-            {
-                drawn.PreviewFrame = presented;
-                _imagesShown++;
-            }
-            if (drawn.GpuFull != null && drawn.FullFrame == 0)
-            {
-                drawn.FullFrame = presented;
-                Perf.StampOnce(ref _stampedFullFrame, "full frame", presented);
-                Loaded(drawn);
-            }
-        }
+    }
 
-        if (_extraFrames > 0)
+    /// <summary>One line per image the user went to, for the navigation benchmark.</summary>
+    void LogStep(LoadedImage image, double ms)
+    {
+        if (_options.PerfLog == null) return;
+        try
         {
-            _extraFrames--;
-            PInvoke.InvalidateRect(_hwnd, (RECT*)null, false);
+            File.AppendAllText(_options.PerfLog, $"step_ms={ms:F2} full={(image.GpuFull != null ? 1 : 0)} file={System.IO.Path.GetFileName(image.Path)}\n");
+        }
+        catch (IOException)
+        {
         }
     }
 
-    double _lastFrameMs;
-    int _frames, _intervals, _imagesShown;
-    double _frameCpuMs, _frameMaxCpuMs, _frameMaxMs, _intervalMs, _intervalMaxMs;
-    long _lastPresented;
-
-    void WriteFrameStatistics()
+    void WriteStatistics()
     {
         if (_options.PerfLog == null) return;
         try
         {
             File.AppendAllText(_options.PerfLog,
-                $"images_shown={_imagesShown} last_index={_fileIndex + 1}/{FileCount} frames={_frames} cpu_mean_ms={_frameCpuMs / Math.Max(_frames, 1):F3} cpu_max_ms={_frameMaxCpuMs:F3} frame_max_ms={_frameMaxMs:F2} " +
+                $"images_shown={_imagesShown} last_index={_fileIndex + 1}/{FileCount} " +
+                $"steps={_steps} step_mean_ms={_stepMs / Math.Max(_steps, 1):F2} step_max_ms={_stepMaxMs:F2} " +
+                $"frames={_frames} cpu_mean_ms={_frameCpuMs / Math.Max(_frames, 1):F3} cpu_max_ms={_frameMaxCpuMs:F3} frame_max_ms={_frameMaxMs:F2} " +
                 $"intervals={_intervals} interval_mean_ms={(_intervals > 0 ? _intervalMs / _intervals : 0):F2} interval_max_ms={_intervalMaxMs:F2}\n");
         }
         catch (IOException)
@@ -672,7 +809,7 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
-    /// <summary>An image is completely on screen: report and, in benchmark runs, leave.</summary>
+    /// <summary>The image asked for is completely on screen: report and, in benchmark runs, leave.</summary>
     void Loaded(LoadedImage image)
     {
         try
@@ -685,7 +822,10 @@ internal sealed unsafe partial class MainWindow
             if (_options.PerfLog != null)
             {
                 File.AppendAllText(_options.PerfLog,
-                    $"qpf={Stopwatch.Frequency} requested={_requested} first_frame={image.PreviewFrame} full_frame={image.FullFrame} file={System.IO.Path.GetFileName(image.Path)}\n");
+                    $"qpf={Stopwatch.Frequency} requested={_requested} first_frame={_requestFirstFrame} full_frame={image.FullFrame} " +
+                    $"file_read={image.FileReadAt} preview_decoded={image.PreviewDecodedAt} full_decoded={image.FullDecodedAt} " +
+                    $"read_ms={image.ReadMs:F1} preview_ms={image.PreviewDecodeMs:F1} full_ms={image.FullDecodeMs:F1} mip_ms={image.MipMs:F1} upload_ms={image.UploadMs:F1} " +
+                    $"file={System.IO.Path.GetFileName(image.Path)}\n");
             }
         }
         catch (IOException)
@@ -694,7 +834,7 @@ internal sealed unsafe partial class MainWindow
         if (_options.ExitWhenLoaded) PInvoke.PostMessage(_hwnd, PInvoke.WM_CLOSE, default, default);
     }
 
-    bool _perfOutWritten;
+    // ---------------------------------------------------------------- GDI
 
     /// <summary>The decoded pixels GDI can paint: 8-bit colour only, the smaller version if there are two.</summary>
     static DecodedImage? GdiSource(LoadedImage? image)
@@ -708,7 +848,7 @@ internal sealed unsafe partial class MainWindow
         PAINTSTRUCT paint;
         HDC dc = PInvoke.BeginPaint(_hwnd, &paint);
         RECT client = new() { right = _clientWidth, bottom = _clientHeight };
-        DecodedImage? source = GdiSource(_image);
+        DecodedImage? source = GdiSource(_shown);
         if (source == null)
         {
             PInvoke.FillRect(dc, &client, _backgroundBrush);
@@ -716,7 +856,7 @@ internal sealed unsafe partial class MainWindow
             return;
         }
 
-        LoadedImage image = _image!;
+        LoadedImage image = _shown!;
         // Texel coordinates of the decoded pixels -> screen.
         Affine2 texelToImage = Affine2.ScaleTranslate((double)image.Width / source.Width, (double)image.Height / source.Height, 0, 0);
         Affine2 m = ImageToScreen(image, _view).After(texelToImage);
@@ -764,6 +904,7 @@ internal sealed unsafe partial class MainWindow
         }
         PInvoke.EndPaint(_hwnd, &paint);
         Perf.StampOnce(ref _stampedGdi, "first pixels (GDI)");
+        StartFolderIndexIfDue();
     }
 
     // ---------------------------------------------------------------- input
@@ -774,13 +915,13 @@ internal sealed unsafe partial class MainWindow
         _clientWidth = width;
         _clientHeight = height;
         _gpu?.Resize(width, height);
-        if (_view.Fit && _image is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+        if (_view.Fit && _shown is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
         Invalidate();
     }
 
     void OnMouseWheel(int delta, int screenX, int screenY)
     {
-        if (_image is not { HasSize: true }) return;
+        if (_shown is not { HasSize: true }) return;
         var point = new System.Drawing.Point(screenX, screenY);
         PInvoke.ScreenToClient(_hwnd, &point);
         double factor = Math.Pow(WheelZoomStep, delta / (double)PInvoke.WHEEL_DELTA);
@@ -790,7 +931,7 @@ internal sealed unsafe partial class MainWindow
 
     void OnMouseMove(int x, int y)
     {
-        if (_panning && _image is { HasSize: true } image)
+        if (_panning && _shown is { HasSize: true } image)
         {
             _view.Pan(x - _mouseX, y - _mouseY, image.UprightWidth, image.UprightHeight);
         }
@@ -801,8 +942,8 @@ internal sealed unsafe partial class MainWindow
 
     void OnKeyDown(VIRTUAL_KEY key)
     {
-
-        LoadedImage? image = _image is { HasSize: true } ? _image : null;
+        LoadedImage? image = _shown is { HasSize: true } ? _shown : null;
+        bool shift = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) < 0;
         switch (key)
         {
             case VIRTUAL_KEY.VK_ESCAPE:
@@ -836,11 +977,16 @@ internal sealed unsafe partial class MainWindow
             case VIRTUAL_KEY.VK_L:
                 _keepView = !_keepView;
                 break;
+            case VIRTUAL_KEY.VK_S:
+                // S: name, date, size, type in turn. Shift+S: reverse the current order.
+                if (shift) SetSort(_sort, !_sortDescending);
+                else SetSort((FolderSort)(((int)_sort + 1) % 4), _sortDescending);
+                break;
             case VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_NEXT or VIRTUAL_KEY.VK_SPACE:
-                Navigate(TargetIndex + 1);
+                Navigate(_fileIndex + 1);
                 break;
             case VIRTUAL_KEY.VK_LEFT or VIRTUAL_KEY.VK_PRIOR or VIRTUAL_KEY.VK_BACK:
-                Navigate(TargetIndex - 1);
+                Navigate(_fileIndex - 1);
                 break;
             case VIRTUAL_KEY.VK_HOME:
                 Navigate(0);
@@ -920,20 +1066,20 @@ internal sealed unsafe partial class MainWindow
                 _mouseX = _mouseY = -1;
                 return default;
 
-            case WM_APP_LOADED:
-                OnLoaded();
+            case WM_APP_PIPELINE:
+                OnPipeline();
                 return default;
             case WM_APP_DEVICE:
                 OnDeviceReady();
-                return default;
-            case WM_APP_UPLOADED:
-                OnUploaded();
                 return default;
             case WM_APP_UI:
                 OnUiReady();
                 return default;
             case WM_APP_FOLDER:
                 OnFolderIndexed();
+                return default;
+            case WM_APP_FOLDER_CHANGED:
+                OnFolderChanged();
                 return default;
 
             case PInvoke.WM_PAINT:
@@ -952,11 +1098,28 @@ internal sealed unsafe partial class MainWindow
                     suggested->bottom - suggested->top, SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
                 return default;
             }
-            case PInvoke.WM_TIMER when wParam.Value == ShowTimerId:
-                EnsureVisible();
-                OnLoaded();
-                OnDeviceReady();
-                OnUiReady();
+            case PInvoke.WM_TIMER:
+                switch (wParam.Value)
+                {
+                    case ShowTimerId:
+                        EnsureVisible();
+                        OnPipeline();
+                        OnDeviceReady();
+                        OnUiReady();
+                        break;
+                    case SettleTimerId:
+                        // The user stopped running through the folder: full resolution may be worked on again.
+                        PInvoke.KillTimer(hwnd, SettleTimerId);
+                        if (_fast)
+                        {
+                            _fast = false;
+                            UpdateWanted();
+                        }
+                        break;
+                    case FolderTimerId:
+                        RefreshFolder();
+                        break;
+                }
                 return default;
 
             case PInvoke.WM_MOUSEWHEEL:
@@ -976,7 +1139,7 @@ internal sealed unsafe partial class MainWindow
                 PInvoke.ReleaseCapture();
                 return default;
             case PInvoke.WM_LBUTTONDBLCLK:
-                if (_image is { HasSize: true } image)
+                if (_shown is { HasSize: true } image)
                 {
                     if (_view.Fit || _view.Zoom != 1) _view.ZoomAt(1, LowWord(lParam.Value), HighWord(lParam.Value), ViewWidth, ViewHeight);
                     else _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
@@ -1000,14 +1163,14 @@ internal sealed unsafe partial class MainWindow
                 return default;
 
             case PInvoke.WM_DESTROY:
-                WriteFrameStatistics();
+                WriteStatistics();
+                StopWatching();
                 PInvoke.PostQuitMessage(0);
                 return default;
         }
         return PInvoke.DefWindowProc(hwnd, message, wParam, lParam);
     }
 }
-
 
 internal static class CrashLog
 {

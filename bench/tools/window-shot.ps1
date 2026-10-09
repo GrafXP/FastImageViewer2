@@ -7,6 +7,7 @@
 #       "drag:x0:y0:x1:y1"    left-button drag in client coordinates
 #       "move:x:y"            mouse move in client coordinates
 #       "dbl:x:y"             double click
+#       "ps:<command>"        run a PowerShell command (e.g. change files the viewer is watching)
 param([string]$Exe, [string[]]$AppArgs, [string[]]$Steps, [string]$OutDir, [int]$Scale = 2)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -45,6 +46,7 @@ try {
         $a = $step -split ':'
         switch ($a[0]) {
             'wait' { Start-Sleep -Milliseconds ([int]$a[1]) }
+            'ps' { Invoke-Expression ($step.Substring(3)) | Out-Null }
             'key' { [void][W]::PostMessageW($h, 0x0100, [IntPtr][int]$a[1], [IntPtr]::Zero) }
             'move' { [void][W]::PostMessageW($h, 0x0200, [IntPtr]::Zero, [W]::L([int]$a[1], [int]$a[2])) }
             'dbl' { [void][W]::PostMessageW($h, 0x0203, [IntPtr]1, [W]::L([int]$a[1], [int]$a[2])) }

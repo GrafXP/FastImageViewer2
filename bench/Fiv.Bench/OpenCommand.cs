@@ -33,7 +33,8 @@ public static class OpenCommand
             if (!File.Exists(path)) return [];
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             using var reader = new StreamReader(stream);
-            return reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            // Only the lines that report a fully loaded image; the viewer logs other events too.
+            return reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(l => l.Contains("full_frame=")).ToArray();
         }
 
         static string[]? WaitForLine(string path, int count)
@@ -51,7 +52,8 @@ public static class OpenCommand
         using var primary = Process.Start(new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
-            ArgumentList = { images[0], "--instance", instance, "--no-activate", "--perf-log", log },
+            // No prefetch and no cache: every open in this benchmark has to read and decode its file.
+            ArgumentList = { images[0], "--instance", instance, "--no-activate", "--perf-log", log, "--no-prefetch", "--cache-mb", "0", "--vram-mb", "0" },
         })!;
         try
         {

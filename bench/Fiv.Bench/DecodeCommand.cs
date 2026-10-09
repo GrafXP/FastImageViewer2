@@ -60,12 +60,12 @@ public static unsafe class DecodeCommand
             if (name.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
             {
                 foreach (int denominator in new[] { 1, 2, 4, 8 })
-                    Row($"libjpeg-turbo 1/{denominator}", (d, s) => JpegDecoder.Decode(d, s, denominator));
+                    Row($"libjpeg-turbo 1/{denominator}", (d, s) => JpegDecoder.Decode(d, s, denominator)!);
                 if (name is "jpeg_24mp.jpg" or "jpeg_12mp.jpg")
                 {
-                    Row("libjpeg-turbo 1/1 fast upsample", (d, s) => JpegDecoder.Decode(d, s, 1, JpegDecodeOptions.FastUpsample));
-                    Row("libjpeg-turbo 1/1 fast upsample + fast DCT", (d, s) => JpegDecoder.Decode(d, s, 1, JpegDecodeOptions.FastUpsample | JpegDecodeOptions.FastDct));
-                    Row("libjpeg-turbo 1/4 fast upsample", (d, s) => JpegDecoder.Decode(d, s, 4, JpegDecodeOptions.FastUpsample));
+                    Row("libjpeg-turbo 1/1 fast upsample", (d, s) => JpegDecoder.Decode(d, s, 1, JpegDecodeOptions.FastUpsample)!);
+
+                    Row("libjpeg-turbo 1/4 fast upsample", (d, s) => JpegDecoder.Decode(d, s, 4, JpegDecodeOptions.FastUpsample)!);
                 }
             }
             Row("WIC", WicDecoder.Decode);
@@ -110,7 +110,7 @@ public static unsafe class DecodeCommand
                 byte[] file = files[i % files.Length];
                 fixed (byte* p = file)
                 {
-                    using DecodedImage image = JpegDecoder.Decode(p, (nuint)file.Length, denominator, JpegDecodeOptions.FastUpsample);
+                    using DecodedImage image = JpegDecoder.Decode(p, (nuint)file.Length, denominator, JpegDecodeOptions.FastUpsample)!;
                 }
             });
             best = Math.Max(best, files.Length * rounds / Stopwatch.GetElapsedTime(t0).TotalSeconds);

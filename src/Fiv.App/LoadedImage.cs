@@ -1,17 +1,25 @@
+using System.Diagnostics;
 using Fiv.Imaging;
 using Fiv.Render;
+using Fiv.Scheduling;
 
 namespace Fiv.App;
 
 /// <summary>
-/// Everything held for the image on display: the decoded pixels (kept for the pixel readout),
-/// the textures, and what the loader reported. Touched only on the UI thread, except that a
-/// worker reads <see cref="Full"/> and <see cref="Mips"/> while <see cref="Uploading"/> is set.
+/// One file in the image cache: what has been decoded of it, what is on the GPU, and which jobs
+/// are under way. Owned by <see cref="ImagePipeline"/> and touched only on the UI thread, except
+/// for <see cref="AcquireFile"/>, which the decode workers call.
 /// </summary>
-internal sealed unsafe class LoadedImage(string path, int generation)
+internal sealed unsafe class LoadedImage(string path, long listedSize, long listedModified, bool jpegName)
 {
     public string Path { get; } = path;
-    public int Generation { get; } = generation;
+
+    /// <summary>Size and modified time from the folder index, 0 if unknown. A file that no longer matches is reloaded.</summary>
+    public long ListedSize { get; set; } = listedSize;
+    public long ListedModified { get; set; } = listedModified;
+
+    /// <summary>The name says JPEG, so a preview stage is planned. The content decides in the end.</summary>
+    public bool JpegName { get; } = jpegName;
 
     /// <summary>Size of the stored image in pixels, before the orientation is applied.</summary>
     public int Width, Height;
@@ -23,29 +31,86 @@ internal sealed unsafe class LoadedImage(string path, int generation)
     public MipChain? Mips;
     public GpuImage? GpuPreview, GpuFull;
     public (float Min, float Max) ValueRange = (0, 1);
-    public LoadResult? PreviewInfo, FullInfo;
-    public double UploadMs;
 
-    /// <summary>Stopwatch timestamps of the first frame presented with the preview and with the full image; 0 until then.</summary>
-    public long PreviewFrame, FullFrame;
+    // --- pipeline state
+    public int Rank = int.MaxValue; // 0: the image asked for; 1..: prefetched around it; MaxValue: only cached
+    public bool WantFull;
+    public WorkItem? PreviewJob, FullJob;
+    public UploadTicket? PreviewUpload, FullUpload;
+    public bool FullUploadFailed;
 
-    public bool Uploading;
-    bool _disposeRequested;
+    /// <summary>The preview is decoded, or this file turned out to have none.</summary>
+    public bool PreviewResolved;
+    public bool HasNoPreview;
+
+    /// <summary>The full decode succeeded or failed; either way it will not be tried again.</summary>
+    public bool FullResolved;
+    public bool Disposed;
+
+    /// <summary>Removed from the cache while on screen (its file changed); whoever shows it disposes it afterwards.</summary>
+    public bool Orphaned;
+    public long LastUsed;
+
+    // --- timings, for the overlay and the benchmarks
+    public double ReadMs, PreviewDecodeMs, FullDecodeMs, MipMs, UploadMs;
+    public int PreviewWidth, PreviewHeight;
+    public long FileReadAt, PreviewDecodedAt, FullDecodedAt;
+
+    /// <summary>Stopwatch timestamps of the first frame presented with any picture of this image, and with the full one; 0 until then.</summary>
+    public long FirstFrame, FullFrame;
 
     public bool HasSize => Width > 0 && Height > 0;
     public double UprightWidth => Orientation.SwapsAxes() ? Height : Width;
     public double UprightHeight => Orientation.SwapsAxes() ? Width : Height;
     public GpuImage? BestGpu => GpuFull ?? GpuPreview;
-    public PixelLayout? Layout => (Full ?? Preview)?.Layout;
+    public PixelLayout? Layout => (Full ?? Preview)?.Layout ?? BestGpu?.Layout;
+    public long CpuBytes => (Preview?.ByteCount ?? 0) + (Full?.ByteCount ?? 0) + (Mips?.ByteCount ?? 0);
+    public long GpuBytes => (GpuPreview?.ByteCount ?? 0) + (GpuFull?.ByteCount ?? 0);
 
-    /// <summary>Frees everything, or does so when the running upload has finished.</summary>
+    // --- the file's bytes, read once and shared by the decodes of this image
+    readonly object _fileGate = new();
+    FileBytes? _file;
+
+    /// <summary>
+    /// The file in memory, read on first use. The caller releases what it gets. A second decode
+    /// of the same image waits here for the first one's read instead of reading the file again,
+    /// which matters on slow disks and network shares.
+    /// </summary>
+    public FileBytes AcquireFile(out double readMs, out long readAt)
+    {
+        lock (_fileGate)
+        {
+            if (_file == null)
+            {
+                long started = Stopwatch.GetTimestamp();
+                _file = FileBytes.Read(Path);
+                _readAt = Stopwatch.GetTimestamp();
+                _readMs = Stopwatch.GetElapsedTime(started, _readAt).TotalMilliseconds;
+            }
+            _file.AddReference();
+            readMs = _readMs;
+            readAt = _readAt;
+            return _file;
+        }
+    }
+
+    double _readMs;
+    long _readAt;
+
+    /// <summary>Lets go of the file's bytes; decodes still running keep their own reference.</summary>
+    public void ReleaseFile()
+    {
+        lock (_fileGate)
+        {
+            _file?.Release();
+            _file = null;
+        }
+    }
+
+    /// <summary>Frees everything. Uploads in flight hold their own references to the pixels they read.</summary>
     public void Dispose()
     {
-        if (Uploading)
-        {
-            _disposeRequested = true;
-            return;
-        }
+        Disposed = true;
         GpuPreview?.Dispose();
         GpuFull?.Dispose();
         Preview?.Dispose();
@@ -54,20 +119,12 @@ internal sealed unsafe class LoadedImage(string path, int generation)
         GpuPreview = GpuFull = null;
         Preview = Full = null;
         Mips = null;
-    }
-
-    /// <summary>Called on the UI thread when the upload worker is done. Returns false if the image was dropped meanwhile.</summary>
-    public bool UploadFinished()
-    {
-        Uploading = false;
-        if (!_disposeRequested) return true;
-        Dispose();
-        return false;
+        ReleaseFile();
     }
 
     /// <summary>
     /// The stored samples at an image position, as the file has them: R, G, B, A for colour,
-    /// one value for grayscale. False outside the image or before anything is decoded.
+    /// one value for grayscale. False outside the image or when no decoded pixels are held.
     /// </summary>
     public bool TryReadPixel(int x, int y, out PixelValue value)
     {
@@ -96,12 +153,4 @@ internal sealed unsafe class LoadedImage(string path, int generation)
 internal readonly record struct PixelValue(PixelLayout Layout, float R, float G, float B, float A)
 {
     public bool FromPreview { get; init; }
-
-    public string Format() => Layout switch
-    {
-        PixelLayout.Bgra8 => A == 255 ? $"R {R:0} G {G:0} B {B:0}" : $"R {R:0} G {G:0} B {B:0} A {A:0}",
-        PixelLayout.Rgba16 => $"R {R:0} G {G:0} B {B:0} A {A:0}",
-        PixelLayout.GrayFloat => $"{R:G6}",
-        _ => $"{R:0}",
-    };
 }
