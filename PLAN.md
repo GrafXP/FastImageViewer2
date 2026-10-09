@@ -1,7 +1,7 @@
 # FastImageViewer2 — Plan
 
-Status: **M0 closed; M1 working and measured, with a few items open** (listed under M1 in
-section 9). Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
+Status: **M0 closed; M1 working and measured, with a few items open; M2 started** (folder index
+and navigation; details under each milestone in section 9). Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
 Measured numbers are in sections 2.1 (M0) and 2.2 (the viewer itself). Build and keys: `README.md`.
 
 FastImageViewer2 is a new image viewer for Windows. It takes its feature ideas from
@@ -420,6 +420,24 @@ Found while building it, for M2:
 - Folder index, natural sort, header probes, file-system watcher.
 - Next / previous / first / last, prefetch, decoded-image cache, cancellation.
 - Exit: index budgets met; held-arrow-key budget met.
+
+*State 2026-10-09: first part built.* Opening one file reads and sorts its folder in the
+background (after the file's first pixels), and next / previous / Home / End then walk the folder.
+Measured with `fivbench index`, directory metadata in the OS cache, median of 7:
+
+| Folder | Read | Natural sort | Total | Budget | .NET `GetFiles` + `FileInfo` | Sort with Explorer's `StrCmpLogicalW` |
+|---|---|---|---|---|---|---|
+| 950 images | 0.7 ms | 2.2 ms | 3.0 ms | | 11 ms | 2 ms |
+| 9,500 images | 4.3 ms | 7.3 ms | 12.1 ms | ≤ 50 ms | 83 ms | 35 ms |
+| 95,000 images | 46.7 ms | 15.0 ms | 61.3 ms | ≤ 500 ms | 2,337 ms | 322 ms |
+
+Holding the right arrow (30 key events per second) through the 40 different 12 MP JPEGs showed
+31 of the 39 images in 1.3 s, about 24 images per second: the rate budget (≥ 20/s) is met, "every
+image shown" is not — navigation waits for the image being loaded and then jumps to wherever
+the key has got to. **Still to do in M2:** prefetch of the neighbours and the decoded-image cache
+(which is what closes that gap and gives the one-frame next/previous), cancellation of superseded
+decodes, header probes for dimensions, the file-system watcher, sorting by anything but name, and
+a network-share measurement.
 
 **M3 — Thumbnails and browser**
 - Thumbnail pipeline, cache pack files, GPU atlas.

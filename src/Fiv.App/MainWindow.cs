@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Fiv.Imaging;
+using Fiv.Indexing;
 using Fiv.Render;
 using Windows.Win32;
 using Windows.Win32.Foundation;
@@ -27,6 +28,7 @@ internal sealed unsafe partial class MainWindow
     const uint WM_APP_DEVICE = PInvoke.WM_APP + 2;
     const uint WM_APP_UPLOADED = PInvoke.WM_APP + 3;
     const uint WM_APP_UI = PInvoke.WM_APP + 4;
+    const uint WM_APP_FOLDER = PInvoke.WM_APP + 5;
     const nuint ShowTimerId = 1;
     const uint ShowTimeoutMs = 150;
     const double WheelZoomStep = 1.2;
@@ -63,8 +65,22 @@ internal sealed unsafe partial class MainWindow
     DisplaySettings _display = DisplaySettings.Default, _outgoingDisplay;
     bool _keepView;
 
+    // What next/previous walks through: the files given explicitly, or, after a single file
+    // was opened, the index of its folder once that has been read in the background.
     readonly List<string> _files = [];
+    FolderIndex? _folder;
+    string? _folderFor; // the file whose folder is being, or has been, indexed
+    readonly ConcurrentQueue<(string File, FolderIndex? Index)> _folders = new();
     int _fileIndex;
+
+    // While a load has not shown anything yet, further navigation only moves this target; the
+    // image being loaded is shown first. Holding an arrow key therefore always makes progress.
+    int _pendingIndex = -1;
+    bool _loadInFlight;
+
+    int FileCount => _folder?.Count ?? _files.Count;
+    string FileAt(int index) => _folder != null ? _folder.PathAt(index) : _files[index];
+    int TargetIndex => _pendingIndex >= 0 ? _pendingIndex : _fileIndex;
 
     bool _panning;
     int _mouseX = -1, _mouseY = -1;
@@ -230,25 +246,78 @@ internal sealed unsafe partial class MainWindow
     {
         var list = files.ToList();
         if (list.Count == 0) return;
+        _pendingIndex = -1;
         _files.Clear();
         _files.AddRange(list);
-        _fileIndex = 0;
+
+        // Another file of the folder already indexed: keep the index.
+        if (list.Count == 1 && _folder != null &&
+            string.Equals(System.IO.Path.GetDirectoryName(list[0]), _folder.Directory, StringComparison.OrdinalIgnoreCase) &&
+            _folder.Find(System.IO.Path.GetFileName(list[0].AsSpan())) is >= 0 and int position)
+        {
+            _fileIndex = position;
+        }
+        else
+        {
+            _folder = null;
+            _folderFor = null;
+            _fileIndex = 0;
+        }
         LoadCurrent();
     }
 
     void Navigate(int index)
     {
-        if (_files.Count == 0) return;
-        index = Math.Clamp(index, 0, _files.Count - 1);
-        if (index == _fileIndex) return;
+        if (FileCount == 0) return;
+        index = Math.Clamp(index, 0, FileCount - 1);
+        if (index == TargetIndex) return;
+        if (_loadInFlight)
+        {
+            _pendingIndex = index;
+            return;
+        }
         _fileIndex = index;
         LoadCurrent();
+    }
+
+    /// <summary>Reads and sorts the folder of a file that was opened on its own, so that next and previous work.</summary>
+    void StartFolderIndex(string file)
+    {
+        _folderFor = file;
+        new Thread(() =>
+        {
+            FolderIndex? index = null;
+            try
+            {
+                if (System.IO.Path.GetDirectoryName(file) is { Length: > 0 } directory) index = FolderIndex.Build(directory);
+            }
+            catch (IOException)
+            {
+                // No index: the file stays the only one to show.
+            }
+            _folders.Enqueue((file, index));
+            Post(WM_APP_FOLDER);
+        }) { IsBackground = true, Name = "fiv index" }.Start();
+    }
+
+    void OnFolderIndexed()
+    {
+        while (_folders.TryDequeue(out var item))
+        {
+            if (item.Index == null || item.File != _folderFor || _files.Count != 1 || _files[0] != item.File) continue;
+            int position = item.Index.Find(System.IO.Path.GetFileName(item.File.AsSpan()));
+            if (position < 0) continue; // not a file type the index lists
+            _folder = item.Index;
+            _fileIndex = position;
+            Invalidate();
+        }
     }
 
     void LoadCurrent()
     {
         _requested = Stopwatch.GetTimestamp();
-        _generation = _loader.Load(_files[_fileIndex], ViewWidth, ViewHeight);
+        _loadInFlight = true;
+        _generation = _loader.Load(FileAt(_fileIndex), ViewWidth, ViewHeight);
     }
 
     long _requested; // when the latest load was asked for
@@ -268,6 +337,7 @@ internal sealed unsafe partial class MainWindow
                 continue;
             }
             changed = true;
+            _loadInFlight = false;
             if (result.FileRead != 0) Perf.StampOnce(ref _stampedRead, "file read", result.FileRead);
             bool isNew = _image == null || _image.Generation != result.Generation;
             if (isNew) Replace(new LoadedImage(result.Path, result.Generation));
@@ -327,6 +397,19 @@ internal sealed unsafe partial class MainWindow
         if (_image?.BestGpu != null) DropOutgoing();
         EnsureVisible();
         Invalidate();
+
+        if (_files.Count == 1 && _folder == null && _folderFor == null) StartFolderIndex(_files[0]);
+        if (!_loadInFlight && _pendingIndex >= 0)
+        {
+            // Where the user went while this image was loading.
+            int next = _pendingIndex;
+            _pendingIndex = -1;
+            if (next != _fileIndex)
+            {
+                _fileIndex = next;
+                LoadCurrent();
+            }
+        }
     }
 
     static void Describe(LoadedImage image, LoadResult result)
@@ -550,7 +633,11 @@ internal sealed unsafe partial class MainWindow
         if (drawn != null) Perf.StampOnce(ref _stampedFirstFrame, "first frame (D3D)", presented);
         if (drawn != null && drawn == _image)
         {
-            if (drawn.PreviewFrame == 0) drawn.PreviewFrame = presented;
+            if (drawn.PreviewFrame == 0)
+            {
+                drawn.PreviewFrame = presented;
+                _imagesShown++;
+            }
             if (drawn.GpuFull != null && drawn.FullFrame == 0)
             {
                 drawn.FullFrame = presented;
@@ -567,17 +654,17 @@ internal sealed unsafe partial class MainWindow
     }
 
     double _lastFrameMs;
-    int _frames, _intervals;
+    int _frames, _intervals, _imagesShown;
     double _frameCpuMs, _frameMaxCpuMs, _frameMaxMs, _intervalMs, _intervalMaxMs;
     long _lastPresented;
 
     void WriteFrameStatistics()
     {
-        if (_options.PerfLog == null || _frames == 0) return;
+        if (_options.PerfLog == null) return;
         try
         {
             File.AppendAllText(_options.PerfLog,
-                $"frames={_frames} cpu_mean_ms={_frameCpuMs / _frames:F3} cpu_max_ms={_frameMaxCpuMs:F3} frame_max_ms={_frameMaxMs:F2} " +
+                $"images_shown={_imagesShown} last_index={_fileIndex + 1}/{FileCount} frames={_frames} cpu_mean_ms={_frameCpuMs / Math.Max(_frames, 1):F3} cpu_max_ms={_frameMaxCpuMs:F3} frame_max_ms={_frameMaxMs:F2} " +
                 $"intervals={_intervals} interval_mean_ms={(_intervals > 0 ? _intervalMs / _intervals : 0):F2} interval_max_ms={_intervalMaxMs:F2}\n");
         }
         catch (IOException)
@@ -750,16 +837,16 @@ internal sealed unsafe partial class MainWindow
                 _keepView = !_keepView;
                 break;
             case VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_NEXT or VIRTUAL_KEY.VK_SPACE:
-                Navigate(_fileIndex + 1);
+                Navigate(TargetIndex + 1);
                 break;
             case VIRTUAL_KEY.VK_LEFT or VIRTUAL_KEY.VK_PRIOR or VIRTUAL_KEY.VK_BACK:
-                Navigate(_fileIndex - 1);
+                Navigate(TargetIndex - 1);
                 break;
             case VIRTUAL_KEY.VK_HOME:
                 Navigate(0);
                 break;
             case VIRTUAL_KEY.VK_END:
-                Navigate(_files.Count - 1);
+                Navigate(FileCount - 1);
                 break;
             default:
                 return;
@@ -844,6 +931,9 @@ internal sealed unsafe partial class MainWindow
                 return default;
             case WM_APP_UI:
                 OnUiReady();
+                return default;
+            case WM_APP_FOLDER:
+                OnFolderIndexed();
                 return default;
 
             case PInvoke.WM_PAINT:

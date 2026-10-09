@@ -20,6 +20,7 @@ return command switch
         options.GetOrNull("--images")?.Split(';') ?? new[] { "jpeg_12mp.jpg", "jpeg_24mp.jpg", "jpeg_24mp_422.jpg", "jpeg_50mp.jpg", "png8_24mp.png" }
             .Select(name => Path.Combine(corpus, "single", name)).ToArray(),
         options.GetInt("--runs", 15), options.GetOrNull("--out")),
+    "index" => IndexCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     _ => Help(),
 };
@@ -34,6 +35,8 @@ static int Help()
                                                               cold start of publish\FastImageViewer2.exe, stage by stage
         fivbench reopen  [--images <a;b;...>] [--runs 15] [--out <file.md>]
                                                               open with the viewer already running (second process hands over)
+        fivbench index   [--root <dir>] [--reps 7] [--out <file.md>]
+                                                              read and sort the corpus folders of 1k / 10k / 100k files
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus
         """);

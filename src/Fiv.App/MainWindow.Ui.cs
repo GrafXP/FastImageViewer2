@@ -56,7 +56,7 @@ internal sealed unsafe partial class MainWindow
             }
             else
             {
-                if (_files.Count > 1 && Utf8.TryWrite(_utf8, $"{_fileIndex + 1}/{_files.Count}", out int n))
+                if (FileCount > 1 && Utf8.TryWrite(_utf8, $"{_fileIndex + 1}/{FileCount}", out int n))
                 {
                     Put(n);
                     Separator();
@@ -157,6 +157,12 @@ internal sealed unsafe partial class MainWindow
                     if (Utf8.TryWrite(_utf8, $"{full.DecodeMs,8:0.0}  decode full\n{full.MipMs,8:0.0}  mip levels + statistics", out n)) Put(n);
                 }
                 if (image.GpuFull is { } gpuImage && Utf8.TryWrite(_utf8, $"{image.UploadMs,8:0.0}  upload {gpuImage.ByteCount / 1048576.0:0} MB, {gpuImage.Tiles.Count} texture(s)", out n)) Put(n);
+            }
+            if (_folder is { } folder)
+            {
+                ImGui.Spacing();
+                ImGui.TextDisabled("folder index, ms"u8);
+                if (Utf8.TryWrite(_utf8, $"{folder.EnumerateMs,8:0.0}  read {folder.Count} entries\n{folder.SortMs,8:0.0}  sort", out n)) Put(n);
             }
             ImGui.Spacing();
             if (Utf8.TryWrite(_utf8, $"{_lastFrameMs,8:0.00}  last frame (CPU)", out n)) Put(n);
