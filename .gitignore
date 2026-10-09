@@ -1,0 +1,22 @@
+bin/
+obj/
+artifacts/
+.vs/
+*.user
+
+# native dependencies: sources, build trees and install prefixes are rebuilt by native\build-*.ps1
+native/_src/
+native/_build/
+native/libjpeg-turbo/
+
+# generated test corpus and benchmark output
+corpus/
+bench/results/
+BenchmarkDotNet.Artifacts/
+
+# generated shader bytecode
+shaders/out/
+
+# published executables
+publish/
+

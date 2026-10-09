@@ -1,0 +1,18 @@
+<Project>
+
+  <!-- Native dependencies of executables. Native AOT builds link the static libraries into the
+       exe; JIT builds (tests, benchmarks) load the DLLs from the output directory. -->
+  <ItemGroup Condition="'$(OutputType)' != 'Library' and '$(PublishAot)' == 'true'">
+    <DirectPInvoke Include="turbojpeg" />
+    <NativeLibrary Include="$(LibJpegTurboDir)lib\turbojpeg-static.lib" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OutputType)' != 'Library' and '$(PublishAot)' != 'true'">
+    <Content Include="$(LibJpegTurboDir)bin\turbojpeg.dll" Link="turbojpeg.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+  <Target Name="CheckNativeDependencies" BeforeTargets="CoreCompile" Condition="'$(OutputType)' != 'Library'">
+    <Error Condition="!Exists('$(LibJpegTurboDir)lib\turbojpeg-static.lib')"
+           Text="libjpeg-turbo is not built. Run native\build-libjpeg-turbo.ps1 once." />
+  </Target>
+
+</Project>

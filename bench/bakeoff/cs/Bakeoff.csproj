@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>bakeoff_cs</AssemblyName>
+    <RootNamespace>Fiv.Bakeoff</RootNamespace>
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <IlcInstructionSet>x86-64-v3</IlcInstructionSet>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <StackTraceSupport>false</StackTraceSupport>
+    <DebuggerSupport>false</DebuggerSupport>
+    <EventSourceSupport>false</EventSourceSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.360" PrivateAssets="all" />
+    <Compile Include="..\..\..\shaders\out\Shaders.g.cs" Link="Shaders.g.cs" />
+  </ItemGroup>
+
+  <!-- Bind these through the import table instead of LoadLibrary/GetProcAddress on first call.
+       (libjpeg-turbo is linked in by Directory.Build.targets.) -->
+  <ItemGroup>
+    <DirectPInvoke Include="d3d11" />
+    <NativeLibrary Include="d3d11.lib" />
+    <DirectPInvoke Include="dwmapi" />
+    <NativeLibrary Include="dwmapi.lib" />
+  </ItemGroup>
+
+  <Target Name="CompileShaders" BeforeTargets="CoreCompile">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(RepoRoot)shaders\build.ps1&quot;" />
+  </Target>
+
+</Project>
