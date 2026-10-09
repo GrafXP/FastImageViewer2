@@ -27,7 +27,7 @@ public static unsafe class CorpusCommand
         foreach (int orientation in new[] { 3, 6, 8 })
         {
             string rotated = Path.Combine(single, $"jpeg_12mp_exif{orientation}.jpg");
-            if (!File.Exists(rotated)) File.WriteAllBytes(rotated, ImageWriters.WithExifOrientation(File.ReadAllBytes(Path.Combine(single, "jpeg_12mp.jpg")), orientation));
+            if (!File.Exists(rotated)) File.WriteAllBytes(rotated, ImageWriters.WithExif(File.ReadAllBytes(Path.Combine(single, "jpeg_12mp.jpg")), orientation));
         }
 
         if (Missing(single, "png8_24mp.png", "png16_24mp.png", "tiff16_24mp.tif", "tiff_float_24mp.tif", "png8_2mp.png"))
@@ -49,6 +49,26 @@ public static unsafe class CorpusCommand
         string series = Directory.CreateDirectory(Path.Combine(root, "series", "jpeg_12mp")).FullName;
         for (int i = 0; i < 40; i++) Jpeg(series, $"IMG_{i + 1:D4}.jpg", 4000, 3000, 100 + i, quiet: true);
         Console.WriteLine($"series\\jpeg_12mp: 40 files, {FolderSize(series) / 1e6:F0} MB");
+
+        // The same images as a camera would write them: with a 160 px thumbnail in the EXIF block.
+        string withThumbnails = Directory.CreateDirectory(Path.Combine(root, "series", "jpeg_12mp_exif")).FullName;
+        foreach (string source in Directory.GetFiles(series, "*.jpg"))
+        {
+            string target = Path.Combine(withThumbnails, Path.GetFileName(source));
+            if (File.Exists(target)) continue;
+            Fiv.Imaging.FileBytes file = Fiv.Imaging.FileBytes.Read(source);
+            try
+            {
+                using Fiv.Thumbnails.Thumbnail thumbnail = Fiv.Thumbnails.ThumbnailGenerator.FromImage(file, Fiv.Imaging.ImageDecoding.Probe(file))!;
+                using Fiv.Imaging.DecodedImage small = Fiv.Thumbnails.ThumbnailGenerator.Fit(thumbnail.Pixels, 160);
+                File.WriteAllBytes(target, ImageWriters.WithExif(File.ReadAllBytes(source), 1, Fiv.Imaging.JpegEncoder.Encode(small, 75)));
+            }
+            finally
+            {
+                file.Release();
+            }
+        }
+        Console.WriteLine($"series\\jpeg_12mp_exif: 40 files with embedded thumbnails, {FolderSize(withThumbnails) / 1e6:F0} MB");
 
         if (!skipFolders)
         {

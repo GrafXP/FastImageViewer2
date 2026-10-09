@@ -50,16 +50,37 @@ static unsafe class TestImages
         }
     }
 
-    /// <summary>Puts an EXIF block with the given orientation, and optionally padding to push the frame header far into the file, after the SOI marker.</summary>
-    public static byte[] WithExif(byte[] jpeg, int orientation, int padding = 0)
+    /// <summary>
+    /// Puts an EXIF block after the SOI marker: the given orientation, optionally an embedded
+    /// thumbnail (a JPEG) as cameras write it, and optionally padding segments that push the frame
+    /// header far into the file.
+    /// </summary>
+    public static byte[] WithExif(byte[] jpeg, int orientation, int padding = 0, byte[]? thumbnail = null)
     {
-        byte[] app1 =
-        [
-            0xFF, 0xE1, 0x00, 0x22, (byte)'E', (byte)'x', (byte)'i', (byte)'f', 0, 0,
-            (byte)'I', (byte)'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00,
-            0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, (byte)orientation, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ];
-        var result = new List<byte>(jpeg.Length + app1.Length + padding + 8);
+        static byte[] Le32(int v) => [(byte)v, (byte)(v >> 8), (byte)(v >> 16), (byte)(v >> 24)];
+        var tiff = new List<byte>();
+        tiff.AddRange([(byte)'I', (byte)'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00]);                               // header, first directory at 8
+        tiff.AddRange([0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, (byte)orientation, 0, 0, 0]); // one entry: orientation
+        if (thumbnail == null)
+        {
+            tiff.AddRange(Le32(0));                                                // no second directory
+        }
+        else
+        {
+            tiff.AddRange(Le32(26));                                               // second directory at 26
+            tiff.AddRange([0x02, 0x00]);
+            tiff.AddRange([0x01, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00]);       // JPEGInterchangeFormat
+            tiff.AddRange(Le32(56));
+            tiff.AddRange([0x02, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00]);       // JPEGInterchangeFormatLength
+            tiff.AddRange(Le32(thumbnail.Length));
+            tiff.AddRange(Le32(0));
+            tiff.AddRange(thumbnail);                                              // at 56
+        }
+        int segmentLength = 2 + 6 + tiff.Count;
+        var app1 = new List<byte> { 0xFF, 0xE1, (byte)(segmentLength >> 8), (byte)segmentLength };
+        app1.AddRange("Exif\0\0"u8);
+        app1.AddRange(tiff);
+        var result = new List<byte>(jpeg.Length + app1.Count + padding + 8);
         result.AddRange(jpeg.AsSpan(0, 2));
         result.AddRange(app1);
         while (padding > 0)

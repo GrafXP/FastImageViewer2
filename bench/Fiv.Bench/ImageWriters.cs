@@ -31,22 +31,40 @@ public static unsafe class ImageWriters
         }
     }
 
-    /// <summary>Inserts an EXIF block that holds nothing but the orientation tag (1..8).</summary>
-    public static byte[] WithExifOrientation(byte[] jpeg, int orientation)
+    /// <summary>
+    /// Inserts an EXIF block with the orientation tag (1..8) and, if given, an embedded thumbnail
+    /// (a small JPEG), laid out the way cameras write it: in a second directory after the first.
+    /// </summary>
+    public static byte[] WithExif(byte[] jpeg, int orientation, byte[]? thumbnail = null)
     {
-        ReadOnlySpan<byte> app1 =
-        [
-            0xFF, 0xE1, 0x00, 0x22, (byte)'E', (byte)'x', (byte)'i', (byte)'f', 0, 0,
-            (byte)'I', (byte)'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,  // TIFF header, IFD at offset 8
-            0x01, 0x00,                                               // one entry
-            0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, (byte)orientation, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,                                   // no further IFD
-        ];
-        byte[] result = new byte[jpeg.Length + app1.Length];
-        jpeg.AsSpan(0, 2).CopyTo(result);
-        app1.CopyTo(result.AsSpan(2));
-        jpeg.AsSpan(2).CopyTo(result.AsSpan(2 + app1.Length));
-        return result;
+        static byte[] Le32(int v) => [(byte)v, (byte)(v >> 8), (byte)(v >> 16), (byte)(v >> 24)];
+        var tiff = new List<byte>();
+        tiff.AddRange([(byte)'I', (byte)'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00]);                               // header, first directory at 8
+        tiff.AddRange([0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, (byte)orientation, 0, 0, 0]); // one entry: orientation
+        if (thumbnail == null)
+        {
+            tiff.AddRange(Le32(0));
+        }
+        else
+        {
+            tiff.AddRange(Le32(26));                                               // second directory at 26
+            tiff.AddRange([0x02, 0x00]);
+            tiff.AddRange([0x01, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00]);       // JPEGInterchangeFormat
+            tiff.AddRange(Le32(56));
+            tiff.AddRange([0x02, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00]);       // JPEGInterchangeFormatLength
+            tiff.AddRange(Le32(thumbnail.Length));
+            tiff.AddRange(Le32(0));
+            tiff.AddRange(thumbnail);                                              // at 56
+        }
+        int segmentLength = 2 + 6 + tiff.Count;
+        if (segmentLength > 0xFFFF) throw new ArgumentException("The thumbnail does not fit in one EXIF segment.", nameof(thumbnail));
+        var result = new List<byte>(jpeg.Length + segmentLength + 2);
+        result.AddRange(jpeg.AsSpan(0, 2));
+        result.AddRange([0xFF, 0xE1, (byte)(segmentLength >> 8), (byte)segmentLength]);
+        result.AddRange("Exif\0\0"u8);
+        result.AddRange(tiff);
+        result.AddRange(jpeg.AsSpan(2));
+        return result.ToArray();
     }
 
     /// <summary>PNG with the Paeth filter on every row (the most expensive one to undo) and zlib level 6.</summary>

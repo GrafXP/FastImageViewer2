@@ -139,3 +139,6 @@ GUID_WICPixelFormat64bppRGBA
 CreateSolidBrush
 DeleteObject
 
+
+IWICBitmapScaler
+

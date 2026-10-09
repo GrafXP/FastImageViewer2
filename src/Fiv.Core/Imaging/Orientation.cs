@@ -73,7 +73,53 @@ public static unsafe class Exif
     public static Orientation ReadJpegOrientation(byte* data, nuint length)
     {
         var bytes = new ReadOnlySpan<byte>(data, (int)Math.Min(length, 1 << 20));
-        if (bytes.Length < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8) return Orientation.Normal;
+        return TryFindTiff(bytes, out int start, out int size) ? ReadTiffOrientation(bytes.Slice(start, size)) : Orientation.Normal;
+    }
+
+    /// <summary>
+    /// Finds the small JPEG that cameras embed in the EXIF block (typically 160x120). It is in
+    /// the first kilobytes of the file, so showing it needs no decode of the image itself.
+    /// </summary>
+    public static bool TryFindJpegThumbnail(byte* data, nuint length, out int offset, out int size)
+    {
+        offset = size = 0;
+        var bytes = new ReadOnlySpan<byte>(data, (int)Math.Min(length, 1 << 20));
+        if (!TryFindTiff(bytes, out int tiffStart, out int tiffSize)) return false;
+        ReadOnlySpan<byte> tiff = bytes.Slice(tiffStart, tiffSize);
+        bool little = tiff[0] == (byte)'I';
+        ushort U16(ReadOnlySpan<byte> s) => little ? BinaryPrimitives.ReadUInt16LittleEndian(s) : BinaryPrimitives.ReadUInt16BigEndian(s);
+        uint U32(ReadOnlySpan<byte> s) => little ? BinaryPrimitives.ReadUInt32LittleEndian(s) : BinaryPrimitives.ReadUInt32BigEndian(s);
+
+        if (tiff.Length < 8 || U16(tiff[2..]) != 42) return false;
+        // The thumbnail is described by the second directory (IFD1), which the first one links to.
+        long first = U32(tiff[4..]);
+        if (first + 2 > tiff.Length) return false;
+        long link = first + 2 + U16(tiff[(int)first..]) * 12L;
+        if (link + 4 > tiff.Length) return false;
+        long second = U32(tiff[(int)link..]);
+        if (second == 0 || second + 2 > tiff.Length) return false;
+        int count = U16(tiff[(int)second..]);
+        long thumbnailOffset = 0, thumbnailSize = 0;
+        for (int i = 0; i < count; i++)
+        {
+            long entry = second + 2 + i * 12L;
+            if (entry + 12 > tiff.Length) break;
+            ushort tag = U16(tiff[(int)entry..]);
+            if (tag == 0x0201) thumbnailOffset = U32(tiff[(int)(entry + 8)..]);      // JPEGInterchangeFormat
+            else if (tag == 0x0202) thumbnailSize = U32(tiff[(int)(entry + 8)..]);   // JPEGInterchangeFormatLength
+        }
+        if (thumbnailOffset <= 0 || thumbnailSize < 4 || thumbnailOffset + thumbnailSize > tiff.Length) return false;
+        if (tiff[(int)thumbnailOffset] != 0xFF || tiff[(int)thumbnailOffset + 1] != 0xD8) return false;
+        offset = tiffStart + (int)thumbnailOffset;
+        size = (int)thumbnailSize;
+        return true;
+    }
+
+    /// <summary>The TIFF structure inside a JPEG's EXIF segment. Only the markers before the image data are walked.</summary>
+    static bool TryFindTiff(ReadOnlySpan<byte> bytes, out int start, out int size)
+    {
+        start = size = 0;
+        if (bytes.Length < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8) return false;
         int position = 2;
         while (position + 4 <= bytes.Length && bytes[position] == 0xFF)
         {
@@ -83,10 +129,14 @@ public static unsafe class Exif
             if (segmentLength < 2 || position + 2 + segmentLength > bytes.Length) break;
             ReadOnlySpan<byte> segment = bytes.Slice(position + 4, segmentLength - 2);
             if (marker == 0xE1 && segment.Length > 14 && segment[..6].SequenceEqual("Exif\0\0"u8))
-                return ReadTiffOrientation(segment[6..]);
+            {
+                start = position + 4 + 6;
+                size = segment.Length - 6;
+                return true;
+            }
             position += 2 + segmentLength;
         }
-        return Orientation.Normal;
+        return false;
     }
 
     static Orientation ReadTiffOrientation(ReadOnlySpan<byte> tiff)

@@ -24,7 +24,17 @@ public sealed unsafe class FileBytes
         Length = length;
     }
 
-    public static FileBytes Read(string path)
+    /// <summary>Called with the first part of a file while the rest is still unread.</summary>
+    public delegate void HeadReader(byte* data, nuint headLength, nuint fileLength);
+
+    public static FileBytes Read(string path) => Read(path, 0, null);
+
+    /// <summary>
+    /// Reads the file, pausing after the first <paramref name="headBytes"/> to let
+    /// <paramref name="onHead"/> look at them. A JPEG's metadata, embedded thumbnail included,
+    /// is at its start, so something can be shown before the megabytes behind it have arrived.
+    /// </summary>
+    public static FileBytes Read(string path, int headBytes, HeadReader? onHead)
     {
         HANDLE file;
         fixed (char* p = path)
@@ -44,13 +54,19 @@ public sealed unsafe class FileBytes
             long size;
             if (!PInvoke.GetFileSizeEx(file, &size)) throw new Win32Exception(Marshal.GetLastPInvokeError());
             data = (byte*)NativeMemory.Alloc((nuint)Math.Max(size, 1));
+            bool headPending = onHead != null && headBytes > 0;
             for (long offset = 0; offset < size;)
             {
                 uint got = 0;
-                uint want = (uint)Math.Min(size - offset, 1 << 30);
+                uint want = (uint)Math.Min(size - offset, headPending ? headBytes : 1 << 30);
                 if (!PInvoke.ReadFile(file, data + offset, want, &got, null)) throw new Win32Exception(Marshal.GetLastPInvokeError());
                 if (got == 0) throw new EndOfStreamException($"'{path}' ended after {offset} of {size} bytes.");
                 offset += got;
+                if (headPending)
+                {
+                    headPending = false;
+                    onHead!(data, (nuint)offset, (nuint)size);
+                }
             }
             var result = new FileBytes(data, (nuint)size);
             data = null;

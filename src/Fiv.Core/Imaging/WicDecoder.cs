@@ -81,6 +81,70 @@ public static unsafe class WicDecoder
         }
     }
 
+    /// <summary>
+    /// Decodes straight to a BGRA8 image no larger than <paramref name="maxSize"/> on its long
+    /// side, letting WIC average the pixels down as it decodes, so the full image never has to be
+    /// held. Returns null for files with more than 8 bits per channel: those are decoded in full
+    /// and reduced with their brightness range taken into account.
+    /// </summary>
+    public static DecodedImage? DecodeReduced(byte* data, nuint size, int maxSize)
+    {
+        IWICImagingFactory* factory = Factory();
+        IWICStream* stream = null;
+        IWICBitmapDecoder* decoder = null;
+        IWICBitmapFrameDecode* frame = null;
+        IWICFormatConverter* converter = null;
+        IWICBitmapScaler* scaler = null;
+        try
+        {
+            factory->CreateStream(&stream).ThrowOnFailure();
+            stream->InitializeFromMemory(data, checked((uint)size)).ThrowOnFailure();
+            factory->CreateDecoderFromStream((IStream*)stream, null, WICDecodeOptions.WICDecodeMetadataCacheOnDemand, &decoder).ThrowOnFailure();
+            decoder->GetFrame(0, &frame).ThrowOnFailure();
+            uint width, height;
+            frame->GetSize(&width, &height).ThrowOnFailure();
+            Guid sourceFormat;
+            frame->GetPixelFormat(&sourceFormat).ThrowOnFailure();
+            (PixelLayout layout, _) = Target(factory, sourceFormat);
+            if (layout is PixelLayout.Gray16 or PixelLayout.GrayFloat or PixelLayout.Rgba16) return null;
+
+            // To BGRA first (any palette or bit depth becomes something the scaler takes), then reduce.
+            var source = (IWICBitmapSource*)frame;
+            Guid bgra = PInvoke.GUID_WICPixelFormat32bppBGRA;
+            if (sourceFormat != bgra)
+            {
+                factory->CreateFormatConverter(&converter).ThrowOnFailure();
+                converter->Initialize(source, &bgra, WICBitmapDitherType.WICBitmapDitherTypeNone, null, 0,
+                    WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnFailure();
+                source = (IWICBitmapSource*)converter;
+            }
+            (int targetWidth, int targetHeight) = Resampler.FitWithin((int)width, (int)height, maxSize);
+            if (targetWidth != width || targetHeight != height)
+            {
+                factory->CreateBitmapScaler(&scaler).ThrowOnFailure();
+                scaler->Initialize(source, (uint)targetWidth, (uint)targetHeight, WICBitmapInterpolationMode.WICBitmapInterpolationModeFant).ThrowOnFailure();
+                source = (IWICBitmapSource*)scaler;
+            }
+
+            var image = new DecodedImage(targetWidth, targetHeight, PixelLayout.Bgra8, (int)width, (int)height);
+            HRESULT hr = source->CopyPixels(null, (uint)image.Stride, (uint)image.ByteCount, image.Pixels);
+            if (hr.Failed)
+            {
+                image.Dispose();
+                hr.ThrowOnFailure();
+            }
+            return image;
+        }
+        finally
+        {
+            if (scaler != null) scaler->Release();
+            if (converter != null) converter->Release();
+            if (frame != null) frame->Release();
+            if (decoder != null) decoder->Release();
+            if (stream != null) stream->Release();
+        }
+    }
+
     static (PixelLayout, Guid) Target(IWICImagingFactory* factory, Guid sourceFormat)
     {
         if (sourceFormat == PInvoke.GUID_WICPixelFormat32bppBGRA) return (PixelLayout.Bgra8, sourceFormat);
