@@ -33,6 +33,10 @@ internal sealed unsafe partial class MainWindow
     const uint WM_APP_FOLDER = PInvoke.WM_APP + 5;
     const uint WM_APP_FOLDER_CHANGED = PInvoke.WM_APP + 6;
     const uint WM_APP_THUMBS = PInvoke.WM_APP + 7;
+    const uint WM_APP_PICKED = PInvoke.WM_APP + 8;
+
+    /// <summary>Sent by tests: show the Open dialog (wParam 1: for a folder), as Ctrl+O would.</summary>
+    const uint WM_APP_TEST_OPEN_DIALOG = PInvoke.WM_APP + 21;
 
     /// <summary>Sent by the benchmark tool: start the frame statistics afresh, so that they cover only what follows.</summary>
     const uint WM_APP_RESET_STATISTICS = PInvoke.WM_APP + 20;
@@ -1408,6 +1412,12 @@ internal sealed unsafe partial class MainWindow
                 return default;
             case WM_APP_THUMBS:
                 Invalidate(); // the frame takes the finished thumbnails in
+                return default;
+            case WM_APP_PICKED:
+                OnPicked();
+                return default;
+            case WM_APP_TEST_OPEN_DIALOG:
+                OpenWithDialog(folder: wParam.Value != 0);
                 return default;
             case WM_APP_RESET_STATISTICS:
                 _frames = _intervals = _thumbsUploaded = 0;

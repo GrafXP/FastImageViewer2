@@ -79,12 +79,32 @@ internal sealed unsafe partial class MainWindow
         Invalidate();
     }
 
+    bool _pickerOpen;
+    readonly System.Collections.Concurrent.ConcurrentQueue<(bool Folder, List<string> Paths)> _picked = new();
+
+    /// <summary>Opens the system's dialog; what is chosen arrives later through <see cref="OnPicked"/>.</summary>
     void OpenWithDialog(bool folder)
     {
-        List<string> picked = FileActions.Pick(_hwnd, folder);
-        if (picked.Count == 0) return;
-        if (folder) OpenFolder(picked[0]);
-        else Open(picked);
+        if (_pickerOpen) return;
+        _pickerOpen = true;
+        FileActions.PickAsync(_hwnd, folder, paths =>
+        {
+            _picked.Enqueue((folder, paths));
+            Post(WM_APP_PICKED);
+        });
+    }
+
+    void OnPicked()
+    {
+        while (_picked.TryDequeue(out var picked))
+        {
+            _pickerOpen = false;
+            if (picked.Paths.Count == 0) continue; // cancelled
+            if (picked.Folder) OpenFolder(picked.Paths[0]);
+            else Open(picked.Paths);
+            BringToFront();
+        }
+        Invalidate();
     }
 
     void BeginRename()

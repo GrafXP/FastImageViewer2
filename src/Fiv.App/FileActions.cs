@@ -13,16 +13,6 @@ namespace Fiv.App;
 /// <summary>What can be done with files from the viewer beyond looking at them. All of it on the UI thread.</summary>
 internal static unsafe class FileActions
 {
-    static bool s_comReady;
-
-    /// <summary>The shell's dialogs need COM in single-threaded mode on the thread that shows them.</summary>
-    static void EnsureCom()
-    {
-        if (s_comReady) return;
-        s_comReady = true;
-        PInvoke.CoInitializeEx(null, COINIT.COINIT_APARTMENTTHREADED | COINIT.COINIT_DISABLE_OLE1DDE);
-    }
-
     /// <summary>Opens the file's folder in Explorer with the file selected.</summary>
     public static void ShowInExplorer(string path)
     {
@@ -35,11 +25,37 @@ internal static unsafe class FileActions
         }
     }
 
-    /// <summary>The system's Open dialog for one or more files, or for a folder. Empty if cancelled.</summary>
-    public static List<string> Pick(HWND owner, bool folder)
+    /// <summary>
+    /// Shows the system's Open dialog on a thread of its own and calls <paramref name="done"/>
+    /// there with what was picked (empty if cancelled). The shell's dialogs need a single-threaded
+    /// COM apartment; the UI thread is not one, and calling the dialog from it made the viewer
+    /// hang. On its own thread the dialog is still modal to the window, which keeps repainting.
+    /// </summary>
+    public static void PickAsync(HWND owner, bool folder, Action<List<string>> done)
+    {
+        var thread = new Thread(() =>
+        {
+            List<string> picked;
+            try
+            {
+                picked = Pick(owner, folder);
+            }
+            catch (Exception e)
+            {
+                CrashLog.Write(e);
+                picked = [];
+            }
+            done(picked);
+        }) { IsBackground = true, Name = "fiv dialog" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+    }
+
+    /// <summary>The system's Open dialog for one or more files, or for a folder. Empty if cancelled. Call on a single-threaded-apartment thread.</summary>
+    static List<string> Pick(HWND owner, bool folder)
     {
         var result = new List<string>();
-        EnsureCom();
+        PInvoke.CoInitializeEx(null, COINIT.COINIT_APARTMENTTHREADED | COINIT.COINIT_DISABLE_OLE1DDE);
         var clsid = new Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7"); // CLSID_FileOpenDialog
         Guid iid = IFileOpenDialog.IID_Guid;
         IFileOpenDialog* dialog = null;
