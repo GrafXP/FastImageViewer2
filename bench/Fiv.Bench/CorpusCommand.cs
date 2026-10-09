@@ -24,6 +24,11 @@ public static unsafe class CorpusCommand
         Jpeg(single, "jpeg_24mp_444.jpg", 6000, 4000, 2, TurboJpeg.Subsampling.S444);
         Jpeg(single, "jpeg_24mp_progressive.jpg", 6000, 4000, 2, progressive: true);
         Jpeg(single, "jpeg_wide_20000x4000.jpg", 20000, 4000, 4);
+        foreach (int orientation in new[] { 3, 6, 8 })
+        {
+            string rotated = Path.Combine(single, $"jpeg_12mp_exif{orientation}.jpg");
+            if (!File.Exists(rotated)) File.WriteAllBytes(rotated, ImageWriters.WithExifOrientation(File.ReadAllBytes(Path.Combine(single, "jpeg_12mp.jpg")), orientation));
+        }
 
         if (Missing(single, "png8_24mp.png", "png16_24mp.png", "tiff16_24mp.tif", "tiff_float_24mp.tif", "png8_2mp.png"))
         {

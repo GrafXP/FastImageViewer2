@@ -13,6 +13,13 @@ return command switch
     "bakeoff" => BakeoffCommand.Run(repoRoot,
         options.Get("--image", Path.Combine(corpus, "single", "jpeg_24mp.jpg")),
         options.GetInt("--runs", 50), options.GetInt("--warm", 20), options.GetOrNull("--out")),
+    "open" => OpenCommand.Run(repoRoot,
+        options.Get("--image", Path.Combine(corpus, "single", "jpeg_24mp.jpg")),
+        options.GetInt("--runs", 30), options.GetOrNull("--out")),
+    "reopen" => OpenCommand.RunWarm(repoRoot,
+        options.GetOrNull("--images")?.Split(';') ?? new[] { "jpeg_12mp.jpg", "jpeg_24mp.jpg", "jpeg_24mp_422.jpg", "jpeg_50mp.jpg", "png8_24mp.png" }
+            .Select(name => Path.Combine(corpus, "single", name)).ToArray(),
+        options.GetInt("--runs", 15), options.GetOrNull("--out")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     _ => Help(),
 };
@@ -23,6 +30,10 @@ static int Help()
         fivbench corpus  [--root <dir>] [--skip-folders]      generate the test corpus (default: <repo>\corpus)
         fivbench bakeoff [--image <jpg>] [--runs 50] [--warm 20] [--out <file.md>]
                                                               C# Native AOT vs C++ time to first pixel
+        fivbench open    [--image <file>] [--runs 30] [--out <file.md>]
+                                                              cold start of publish\FastImageViewer2.exe, stage by stage
+        fivbench reopen  [--images <a;b;...>] [--runs 15] [--out <file.md>]
+                                                              open with the viewer already running (second process hands over)
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus
         """);

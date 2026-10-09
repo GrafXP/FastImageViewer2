@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Fiv.Render</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Fiv.Core\Fiv.Core.csproj" />
+    <ProjectReference Include="..\Fiv.Interop\Fiv.Interop.csproj" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.DisableRuntimeMarshallingAttribute" />
+    <Compile Include="$(RepoRoot)shaders\out\Shaders.g.cs" Link="Shaders.g.cs" />
+  </ItemGroup>
+
+  <Target Name="CompileShaders" BeforeTargets="CoreCompile" Inputs="@(ShaderSource)" Outputs="$(RepoRoot)shaders\out\Shaders.g.cs">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(RepoRoot)shaders\build.ps1&quot;" />
+  </Target>
+
+  <ItemGroup>
+    <ShaderSource Include="$(RepoRoot)shaders\*.hlsl;$(RepoRoot)shaders\build.ps1" />
+  </ItemGroup>
+
+</Project>

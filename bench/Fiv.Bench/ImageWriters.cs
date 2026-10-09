@@ -31,6 +31,24 @@ public static unsafe class ImageWriters
         }
     }
 
+    /// <summary>Inserts an EXIF block that holds nothing but the orientation tag (1..8).</summary>
+    public static byte[] WithExifOrientation(byte[] jpeg, int orientation)
+    {
+        ReadOnlySpan<byte> app1 =
+        [
+            0xFF, 0xE1, 0x00, 0x22, (byte)'E', (byte)'x', (byte)'i', (byte)'f', 0, 0,
+            (byte)'I', (byte)'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,  // TIFF header, IFD at offset 8
+            0x01, 0x00,                                               // one entry
+            0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, (byte)orientation, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,                                   // no further IFD
+        ];
+        byte[] result = new byte[jpeg.Length + app1.Length];
+        jpeg.AsSpan(0, 2).CopyTo(result);
+        app1.CopyTo(result.AsSpan(2));
+        jpeg.AsSpan(2).CopyTo(result.AsSpan(2 + app1.Length));
+        return result;
+    }
+
     /// <summary>PNG with the Paeth filter on every row (the most expensive one to undo) and zlib level 6.</summary>
     public static void WritePng(string path, byte* pixels, int stride, int width, int height, PngKind kind)
     {

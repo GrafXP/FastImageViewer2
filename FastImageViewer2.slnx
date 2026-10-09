@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/bench/">
+    <Project Path="bench/Fiv.Bench/Fiv.Bench.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Fiv.App/Fiv.App.csproj" />
+    <Project Path="src/Fiv.Core/Fiv.Core.csproj" />
+    <Project Path="src/Fiv.Interop/Fiv.Interop.csproj" />
+    <Project Path="src/Fiv.Render/Fiv.Render.csproj" />
+  </Folder>
+</Solution>

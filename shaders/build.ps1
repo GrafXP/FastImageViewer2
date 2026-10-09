@@ -10,7 +10,9 @@ $out = Join-Path $root 'out'
 # file, entry point, profile, output name
 $shaders = @(
     @('blit.hlsl', 'vs_main', 'vs_5_0', 'blit_vs'),
-    @('blit.hlsl', 'ps_main', 'ps_5_0', 'blit_ps')
+    @('blit.hlsl', 'ps_main', 'ps_5_0', 'blit_ps'),
+    @('view.hlsl', 'vs_main', 'vs_5_0', 'view_vs'),
+    @('view.hlsl', 'ps_main', 'ps_5_0', 'view_ps')
 )
 
 $cs = Join-Path $out 'Shaders.g.cs'

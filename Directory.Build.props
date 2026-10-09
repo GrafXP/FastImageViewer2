@@ -16,7 +16,7 @@
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
-      <_Parameter1>windows10.0</_Parameter1>
+      <_Parameter1>windows10.0.17763</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 

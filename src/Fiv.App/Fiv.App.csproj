@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>FastImageViewer2</AssemblyName>
+    <RootNamespace>Fiv.App</RootNamespace>
+
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <IlcInstructionSet>x86-64-v3</IlcInstructionSet>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <DebuggerSupport>false</DebuggerSupport>
+    <EventSourceSupport>false</EventSourceSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Fiv.Core\Fiv.Core.csproj" />
+    <ProjectReference Include="..\Fiv.Render\Fiv.Render.csproj" />
+    <ProjectReference Include="..\Fiv.Interop\Fiv.Interop.csproj" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.DisableRuntimeMarshallingAttribute" />
+  </ItemGroup>
+
+  <!-- Bound through the import table instead of LoadLibrary/GetProcAddress on first call. -->
+  <ItemGroup>
+    <DirectPInvoke Include="d3d11" />
+    <NativeLibrary Include="d3d11.lib" />
+    <DirectPInvoke Include="dwmapi" />
+    <NativeLibrary Include="dwmapi.lib" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Hexa.NET.ImGui" Version="2.2.9" />
+    <PackageReference Include="Hexa.NET.ImGui.Backends" Version="1.0.18" />
+  </ItemGroup>
+
+</Project>
