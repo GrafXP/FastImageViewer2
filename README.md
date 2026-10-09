@@ -33,6 +33,14 @@ it runs hands the files to the running window.
 | `Right` / `Space` / `PgDn`, `Left` / `Backspace` / `PgUp` | next, previous image |
 | `Home`, `End` | first, last image |
 | `S`, `Shift+S` | sort the folder by name, date, size, type in turn; reverse the order |
+| `B`, `T`, `Tab` | folder panel (thumbnails or list, filter, subfolders), filmstrip, hide or show both |
+| `Up` / `Down` | one row up or down in the thumbnail grid |
+| Click, `Ctrl`+click, `Shift`+click, `Ctrl+A`, `Ctrl+I` | select in the panels |
+| `Ctrl+O`, `Ctrl+Shift+O` | open files, open a folder |
+| `Ctrl+C`, `Ctrl+Shift+C` | copy the image, copy its path |
+| `F2`, `Del` | rename, move to the Recycle Bin (asks first) |
+| Right click | menu: recent files and folders, file actions, panels, settings |
+| `F1` | list of keys |
 | Mouse wheel, `+` / `-` | zoom at the cursor / at the centre |
 | Left drag | pan |
 | Double click | 100 % at the cursor, or back to fit |
@@ -65,6 +73,8 @@ $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
 & $bench reopen      # open with the viewer already running
 & $bench navigate    # next/previous in a folder: single steps, and the arrow key held
 & $bench index       # folder read and sort for 1k / 10k / 100k files, header probes
+& $bench thumbs      # making thumbnails, and reading them back from the cache
+& $bench browse      # folder panel: first screen of thumbnails, scrolling 95,000 images
 & $bench decode      # decoder timings
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)
 ```

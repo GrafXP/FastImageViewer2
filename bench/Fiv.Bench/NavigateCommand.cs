@@ -20,7 +20,7 @@ public static partial class NavigateCommand
     [LibraryImport("user32")]
     private static partial int PostMessageW(nint window, uint message, nint wParam, nint lParam);
 
-    public static int Run(string repoRoot, string folder, string? outFile)
+    public static int Run(string repoRoot, string folder, string? outFile, bool panels = false)
     {
         string exe = Path.Combine(repoRoot, "publish", "FastImageViewer2.exe");
         if (!File.Exists(exe))
@@ -37,10 +37,11 @@ public static partial class NavigateCommand
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine($"Folder: {Path.GetFileName(folder)}, {files.Length} JPEG files, {files.Sum(f => new FileInfo(f).Length) / 1e6 / files.Length:F1} MB on average.");
+        sb.AppendLine($"Folder: {Path.GetFileName(folder)}, {files.Length} JPEG files, {files.Sum(f => new FileInfo(f).Length) / 1e6 / files.Length:F1} MB on average. Folder panel {(panels ? "open" : "closed")}.");
         sb.AppendLine();
 
         // 1. Single steps, 600 ms apart: 15 forward, 5 back.
+        s_panels = panels;
         var stepLines = Drive(exe, files[0], window =>
         {
             for (int i = 0; i < 20; i++)
@@ -91,6 +92,8 @@ public static partial class NavigateCommand
         return 0;
     }
 
+    static bool s_panels;
+
     static IEnumerable<double> StepTimes(string[] lines) =>
         lines.Where(l => l.StartsWith("step_ms=")).Select(l => double.Parse(Field(l, "step_ms"), System.Globalization.CultureInfo.InvariantCulture));
 
@@ -105,7 +108,7 @@ public static partial class NavigateCommand
         using var process = Process.Start(new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
-            ArgumentList = { file, "--instance", instance, "--no-activate", "--perf-log", log },
+            ArgumentList = { file, "--instance", instance, "--no-activate", "--perf-log", log, s_panels ? "--browser" : "--no-panels", "--profile", BenchProfile.Directory },
         })!;
         try
         {

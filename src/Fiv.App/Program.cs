@@ -25,8 +25,8 @@ internal sealed class Options
     public int DelayGpuMs { get; private set; }
 
     /// <summary>Budgets of the image cache in megabytes: decoded pixels in RAM, textures in video memory.</summary>
-    public int CacheMb { get; private set; } = 4096;
-    public int VramMb { get; private set; } = 2048;
+    public int? CacheMb { get; private set; }
+    public int? VramMb { get; private set; }
 
     /// <summary>
     /// Where settings, the panel layout and the thumbnail cache are kept. Default:
@@ -37,9 +37,10 @@ internal sealed class Options
 
     public string ThumbsDir => Path.Combine(ProfileDir, "thumbs");
 
-    /// <summary>Start with the folder panel / the filmstrip open, whatever the settings say (tests).</summary>
+    /// <summary>Start with the folder panel / the filmstrip open, or with neither, whatever the settings say (tests, benchmarks).</summary>
     public bool ShowBrowser { get; private set; }
     public bool ShowFilmstrip { get; private set; }
+    public bool NoPanels { get; private set; }
 
     /// <summary>Load only the image asked for, not its neighbours (benchmark runs).</summary>
     public bool NoPrefetch { get; private set; }
@@ -62,6 +63,7 @@ internal sealed class Options
                 case "--instance" when i + 1 < args.Length: options.Instance = args[++i]; break;
                 case "--no-prefetch": options.NoPrefetch = true; break;
                 case "--browser": options.ShowBrowser = true; break;
+                case "--no-panels": options.NoPanels = true; break;
                 case "--filmstrip": options.ShowFilmstrip = true; break;
                 case "--profile" when i + 1 < args.Length: options.ProfileDir = Path.GetFullPath(args[++i]); break;
                 case "--cache-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int cacheMb): options.CacheMb = Math.Max(0, cacheMb); i++; break;
@@ -90,12 +92,14 @@ internal static class Program
         Perf.Stamp("main");
         Options options = Options.Parse(args);
         if (!options.NewInstance && SingleInstance.TryForward(options.Files, options.Instance)) return 0;
+        Settings settings = Settings.Load(Path.Combine(options.ProfileDir, "settings.json"));
+        Perf.Stamp("settings");
 
         unsafe
         {
             // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
             PInvoke.SetProcessDpiAwarenessContext(new Windows.Win32.UI.HiDpi.DPI_AWARENESS_CONTEXT((void*)-4));
         }
-        return new MainWindow(options).Run();
+        return new MainWindow(options, settings).Run();
     }
 }

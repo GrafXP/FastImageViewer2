@@ -71,6 +71,9 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
     /// <summary>The image on screen. It is never evicted; if its file changes it lives on outside the cache until replaced.</summary>
     public LoadedImage? Pinned;
 
+    /// <summary>How many bytes of decoded pixels and of textures may stay cached beyond what is wanted right now.</summary>
+    public long RamBudget = ramBudget, VramBudget = vramBudget;
+
     public int Count => _cache.Count;
     public long CpuBytes { get; private set; }
     public long GpuBytes { get; private set; }
@@ -246,7 +249,7 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
             cpu += e.CpuBytes;
             gpu += e.GpuBytes;
         }
-        if (cpu > ramBudget || gpu > vramBudget)
+        if (cpu > RamBudget || gpu > VramBudget)
         {
             _scratch.Clear();
             foreach (LoadedImage e in _cache.Values)
@@ -254,7 +257,7 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
             _scratch.Sort(static (a, b) => a.LastUsed.CompareTo(b.LastUsed));
             foreach (LoadedImage e in _scratch)
             {
-                if (cpu <= ramBudget && gpu <= vramBudget) break;
+                if (cpu <= RamBudget && gpu <= VramBudget) break;
                 cpu -= e.CpuBytes;
                 gpu -= e.GpuBytes;
                 Evict(e);

@@ -70,6 +70,18 @@ public static unsafe class CorpusCommand
         }
         Console.WriteLine($"series\\jpeg_12mp_exif: 40 files with embedded thumbnails, {FolderSize(withThumbnails) / 1e6:F0} MB");
 
+        // Enough camera-sized files to fill a screen of the folder panel: the series three times over.
+        string tripled = Directory.CreateDirectory(Path.Combine(root, "series", "jpeg_12mp_x3")).FullName;
+        foreach (string source in Directory.GetFiles(series, "*.jpg"))
+        {
+            foreach (char set in "ABC")
+            {
+                string target = Path.Combine(tripled, set + "_" + Path.GetFileName(source));
+                if (!File.Exists(target)) File.Copy(source, target);
+            }
+        }
+        Console.WriteLine($"series\\jpeg_12mp_x3: 120 files, {FolderSize(tripled) / 1e6:F0} MB");
+
         if (!skipFolders)
         {
             Folder(Path.Combine(root, "folders", "1k"), 1_000);

@@ -161,11 +161,13 @@ internal sealed unsafe class ThumbnailService(Action wake, string cacheRoot, int
     }
 
     /// <summary>
-    /// Moves finished thumbnails into their atlases, at most <paramref name="budget"/> per call.
-    /// Returns true if anything arrived, i.e. if the panels should be redrawn.
+    /// Moves finished thumbnails into their atlases, at most <paramref name="budget"/> per call: each costs
+    /// the UI thread about 0.1 ms, and 96 in one frame was measured as a 10 ms frame.
+    /// Returns how many arrived.
     /// </summary>
-    public bool Upload(int budget = 96)
+    public int Upload(int budget = 32)
     {
+        int count = 0;
         bool any = false;
         while (budget-- > 0 && _results.TryDequeue(out Result result))
         {
@@ -176,6 +178,7 @@ internal sealed unsafe class ThumbnailService(Action wake, string cacheRoot, int
             {
                 if (result.CellSize == surface.CellSize && surface.Atlas != null) surface.Atlas.Put(result.Key, result.Image, result.Provisional);
                 result.Image.Dispose();
+                if (!result.Provisional) count++;
             }
             any = true;
         }
@@ -186,7 +189,7 @@ internal sealed unsafe class ThumbnailService(Action wake, string cacheRoot, int
             _lastFlush = now;
             _pack?.Flush();
         }
-        return any;
+        return count;
     }
 
     /// <summary>Changes the size thumbnails are shown at on a surface; they are all made again from the pack.</summary>

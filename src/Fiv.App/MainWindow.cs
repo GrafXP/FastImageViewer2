@@ -33,7 +33,10 @@ internal sealed unsafe partial class MainWindow
     const uint WM_APP_FOLDER = PInvoke.WM_APP + 5;
     const uint WM_APP_FOLDER_CHANGED = PInvoke.WM_APP + 6;
     const uint WM_APP_THUMBS = PInvoke.WM_APP + 7;
-    const nuint ShowTimerId = 1, SettleTimerId = 2, FolderTimerId = 3;
+
+    /// <summary>Sent by the benchmark tool: start the frame statistics afresh, so that they cover only what follows.</summary>
+    const uint WM_APP_RESET_STATISTICS = PInvoke.WM_APP + 20;
+    const nuint ShowTimerId = 1, SettleTimerId = 2, FolderTimerId = 3, NoticeTimerId = 4;
     const uint ShowTimeoutMs = 150;
 
     /// <summary>Steps closer together than this count as running through the folder.</summary>
@@ -101,14 +104,25 @@ internal sealed unsafe partial class MainWindow
 
     bool _stampedRead, _stampedPreview, _stampedGdi, _stampedFirstFrame, _stampedFullDecoded, _stampedFullFrame;
 
-    public MainWindow(Options options)
+    public MainWindow(Options options, Settings settings)
     {
         _options = options;
-        _showBrowser = options.ShowBrowser;
-        _showFilmstrip = options.ShowFilmstrip;
+        _settings = settings;
+        _showBrowser = !options.NoPanels && (options.ShowBrowser || settings.ShowBrowser);
+        _showFilmstrip = !options.NoPanels && (options.ShowFilmstrip || settings.ShowFilmstrip);
+        _browserMode = settings.BrowserList ? BrowserMode.List : BrowserMode.Grid;
+        _thumbSize = settings.ThumbnailSize;
+        _sort = settings.Sort;
+        _sortDescending = settings.SortDescending;
+        _keepView = settings.KeepView;
+        _display.Sharp = settings.ExactPixels;
         _files.AddRange(options.Files);
-        _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE), (long)options.CacheMb << 20, (long)options.VramMb << 20);
+        _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE),
+            (long)(options.CacheMb ?? settings.CacheMb) << 20, (long)(options.VramMb ?? settings.VramMb) << 20);
     }
+
+    bool _startMaximized;
+    int _thumbsTrimmed;
 
     int StatusBarHeight => (int)Math.Round(24 * _dpiScale);
 
@@ -121,12 +135,35 @@ internal sealed unsafe partial class MainWindow
     int ViewWidth => Math.Max(1, _viewWidth);
     int ViewHeight => Math.Max(1, _viewHeight);
 
+    /// <summary>
+    /// Before the panels exist, the image area is where they will leave it: as saved at the end
+    /// of the last run, or as the default layout puts it. The first picture is then fitted and
+    /// decoded for the right size, and does not jump when the panels appear.
+    /// </summary>
     void UseWholeClientAsView()
     {
         if (_viewFromLayout) return;
-        _viewX = _viewY = 0;
-        _viewWidth = _clientWidth;
-        _viewHeight = _clientHeight - StatusBarHeight;
+        int height = _clientHeight - StatusBarHeight;
+        bool saved = _settings.ViewLeft > 0.001 || _settings.ViewTop > 0.001 || _settings.ViewRight < 0.999 || _settings.ViewBottom < 0.95;
+        if (!_showBrowser && !_showFilmstrip)
+        {
+            (_viewX, _viewY, _viewWidth, _viewHeight) = (0, 0, _clientWidth, height);
+        }
+        else if (saved)
+        {
+            _viewX = (int)Math.Round(_settings.ViewLeft * _clientWidth);
+            _viewY = (int)Math.Round(_settings.ViewTop * _clientHeight);
+            _viewWidth = (int)Math.Round(_settings.ViewRight * _clientWidth) - _viewX;
+            _viewHeight = (int)Math.Round(_settings.ViewBottom * _clientHeight) - _viewY;
+        }
+        else
+        {
+            // The default layout: folder panel over the left 26 %, filmstrip over the bottom 15 %.
+            _viewX = _showBrowser ? (int)Math.Round(_clientWidth * 0.26) : 0;
+            _viewY = 0;
+            _viewWidth = _clientWidth - _viewX;
+            _viewHeight = (int)Math.Round(height * (_showFilmstrip ? 0.85 : 1.0));
+        }
     }
 
     /// <summary>The docking layout says where the image goes.</summary>
@@ -154,10 +191,13 @@ internal sealed unsafe partial class MainWindow
         {
             string directory = _files[0];
             _files.Clear();
+            Settings.Remember(_settings.RecentFolders, directory);
             StartFolderIndex(directory, directory);
         }
         else if (_files.Count > 0)
         {
+            Settings.Remember(_settings.RecentFiles, _files[0]);
+            if (System.IO.Path.GetDirectoryName(_files[0]) is { Length: > 0 } folder) Settings.Remember(_settings.RecentFolders, folder);
             Request();
         }
         CreateWindow();
@@ -184,25 +224,54 @@ internal sealed unsafe partial class MainWindow
     /// <summary>Decides the window's size before it exists, so that the first decode knows its viewport.</summary>
     void PlanWindow()
     {
-        System.Drawing.Point cursor;
-        PInvoke.GetCursorPos(&cursor);
-        HMONITOR monitor = PInvoke.MonitorFromPoint(cursor, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO info = new() { cbSize = (uint)sizeof(MONITORINFO) };
-        PInvoke.GetMonitorInfo(monitor, &info);
-        RECT work = info.rcWork;
         uint dpi = PInvoke.GetDpiForSystem();
         _dpiScale = dpi / 96.0;
-
         RECT frame = default;
         PInvoke.AdjustWindowRectExForDpi(&frame, WINDOW_STYLE.WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE.WS_EX_ACCEPTFILES, dpi);
         int frameWidth = frame.right - frame.left, frameHeight = frame.bottom - frame.top;
+
+        // Where the window was last time, if that place is still on a screen; otherwise on the screen the mouse is on.
+        HMONITOR monitor = default;
+        RECT saved = new() { left = _settings.WindowX, top = _settings.WindowY, right = _settings.WindowX + _settings.WindowWidth, bottom = _settings.WindowY + _settings.WindowHeight };
+        bool restore = _settings.WindowWidth >= 200 && _settings.WindowHeight >= 150;
+        if (restore)
+        {
+            monitor = PInvoke.MonitorFromRect(&saved, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTONULL);
+            restore = !monitor.IsNull;
+        }
+        if (!restore)
+        {
+            System.Drawing.Point cursor;
+            PInvoke.GetCursorPos(&cursor);
+            monitor = PInvoke.MonitorFromPoint(cursor, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTOPRIMARY);
+        }
+        MONITORINFO info = new() { cbSize = (uint)sizeof(MONITORINFO) };
+        PInvoke.GetMonitorInfo(monitor, &info);
+        RECT work = info.rcWork;
         int workWidth = work.right - work.left, workHeight = work.bottom - work.top;
-        _windowWidth = Math.Min(workWidth, (int)(workWidth * 0.85));
-        _windowHeight = Math.Min(workHeight, (int)(workHeight * 0.88));
-        _windowX = work.left + (workWidth - _windowWidth) / 2;
-        _windowY = work.top + (workHeight - _windowHeight) / 2;
-        _clientWidth = _windowWidth - frameWidth;
-        _clientHeight = _windowHeight - frameHeight;
+        if (restore)
+        {
+            (_windowX, _windowY, _windowWidth, _windowHeight) = (saved.left, saved.top, saved.right - saved.left, saved.bottom - saved.top);
+        }
+        else
+        {
+            _windowWidth = Math.Min(workWidth, (int)(workWidth * 0.85));
+            _windowHeight = Math.Min(workHeight, (int)(workHeight * 0.88));
+            _windowX = work.left + (workWidth - _windowWidth) / 2;
+            _windowY = work.top + (workHeight - _windowHeight) / 2;
+        }
+        _startMaximized = restore && _settings.Maximized && !_options.NoActivate;
+        if (_startMaximized)
+        {
+            // A maximised window's client area is the work area less the caption.
+            _clientWidth = workWidth;
+            _clientHeight = workHeight - (frameHeight - frameWidth);
+        }
+        else
+        {
+            _clientWidth = _windowWidth - frameWidth;
+            _clientHeight = _windowHeight - frameHeight;
+        }
         UseWholeClientAsView();
     }
 
@@ -225,10 +294,13 @@ internal sealed unsafe partial class MainWindow
                 _windowX, _windowY, _windowWidth, _windowHeight, default, default, instance, null);
         }
         if (_hwnd.IsNull) throw new InvalidOperationException("The window could not be created.");
-        RECT client;
-        PInvoke.GetClientRect(_hwnd, &client);
-        _clientWidth = client.right;
-        _clientHeight = client.bottom;
+        if (!_startMaximized)
+        {
+            RECT client;
+            PInvoke.GetClientRect(_hwnd, &client);
+            _clientWidth = client.right;
+            _clientHeight = client.bottom;
+        }
         _dpiScale = PInvoke.GetDpiForWindow(_hwnd) / 96.0;
         UseWholeClientAsView();
         Interlocked.Exchange(ref _hwndForWorkers, (nint)_hwnd.Value);
@@ -259,7 +331,8 @@ internal sealed unsafe partial class MainWindow
         if (_visible || _hwnd.IsNull) return;
         _visible = true;
         PInvoke.KillTimer(_hwnd, ShowTimerId);
-        PInvoke.ShowWindow(_hwnd, _options.NoActivate ? SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE : SHOW_WINDOW_CMD.SW_SHOW);
+        PInvoke.ShowWindow(_hwnd, _options.NoActivate ? SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE
+            : _startMaximized ? SHOW_WINDOW_CMD.SW_SHOWMAXIMIZED : SHOW_WINDOW_CMD.SW_SHOW);
     }
 
     void UpdateTitle()
@@ -329,6 +402,8 @@ internal sealed unsafe partial class MainWindow
             _files.Clear();
             _files.AddRange(list);
         }
+        Settings.Remember(_settings.RecentFiles, list[0]);
+        if (System.IO.Path.GetDirectoryName(list[0]) is { Length: > 0 } recentFolder) Settings.Remember(_settings.RecentFolders, recentFolder);
         _direction = 1;
         _fast = false;
         _scrollBrowserToCurrent = _scrollStripToCurrent = true;
@@ -347,6 +422,7 @@ internal sealed unsafe partial class MainWindow
         {
             return;
         }
+        Settings.Remember(_settings.RecentFolders, directory);
         LeaveFolder();
         _files.Clear();
         _target = null;
@@ -446,6 +522,7 @@ internal sealed unsafe partial class MainWindow
 
     int PrefetchStage()
     {
+        if (_fileIndex < 0 || _fileIndex >= FileCount) return 0; // between folders: nothing is asked for
         LoadedImage? target = _pipeline.Find(FileAt(_fileIndex));
         if (target == null) return 0;
         if (target.GpuFull != null || target.Error != null) return 2;
@@ -567,6 +644,7 @@ internal sealed unsafe partial class MainWindow
     /// </summary>
     void StartFolderIndex(string directory, string token)
     {
+        if (_folderFor != token) _folderRequestedAt = Stopwatch.GetTimestamp(); // a new folder, not a re-read of the current one
         _folderFor = token;
         _folderRefreshRunning = true;
         FolderSort sort = _sort;
@@ -585,6 +663,9 @@ internal sealed unsafe partial class MainWindow
                 // (Creating one takes some 10 ms the first time, which is why it happens here.)
                 if (watch) watcher = CreateWatcher(directory);
                 index = FolderIndex.Build(directory, sort, descending);
+
+                // Once per run: keep the thumbnail cache within its size limit, oldest folders first.
+                if (Interlocked.Exchange(ref _thumbsTrimmed, 1) == 0) ThumbnailPack.Trim(thumbsRoot, (long)_settings.ThumbnailCacheMb << 20);
 
                 // The pack knows the dimensions of every image it has seen before.
                 ThumbnailPack pack = currentPack != null && string.Equals(currentPack.Folder, directory, StringComparison.OrdinalIgnoreCase)
@@ -646,6 +727,11 @@ internal sealed unsafe partial class MainWindow
                     _pendingPack = result.Pack;
                 }
             }
+            if (_folderAll == null)
+            {
+                _folderListedAt = Stopwatch.GetTimestamp();
+                _thumbScreenLogged = false;
+            }
             _folderAll = result.Index;
             ApplyView();
         }
@@ -660,10 +746,28 @@ internal sealed unsafe partial class MainWindow
     /// Makes a view of the folder (newly read, re-sorted or filtered) the list that the panels
     /// show and next/previous walk. The image on show stays if the view has it.
     /// </summary>
-    void AdoptFolder(FolderIndex index)
+    void AdoptFolder(FolderIndex index, bool firstIfGone = false)
     {
         string? current = FileCount > 0 ? FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1)) : null;
         int position = current == null ? -1 : index.Find(System.IO.Path.GetFileName(current.AsSpan()));
+        if (_followName != null)
+        {
+            // The image on show was just renamed: it is found under its new name.
+            int renamed = index.Find(_followName);
+            if (renamed >= 0)
+            {
+                _fileIndex = renamed;
+                _followName = null;
+                position = -1; // a new path: it has to be requested
+                firstIfGone = false;
+                _folder = index;
+                _shownIndex = -1;
+                Request();
+                SelectCurrent();
+                Invalidate();
+                return;
+            }
+        }
         if (index.Count == 0)
         {
             // Everything was deleted, or nothing matches the filter.
@@ -683,7 +787,7 @@ internal sealed unsafe partial class MainWindow
         bool sameOrder = _folder != null && _folder.Sort == index.Sort && _folder.Descending == index.Descending;
         _folder = index;
         // The current file is gone (or filtered out): its former place in the list is the nearest thing to it.
-        _fileIndex = position >= 0 ? position : Math.Clamp(_fileIndex, 0, index.Count - 1);
+        _fileIndex = position >= 0 ? position : firstIfGone ? 0 : Math.Clamp(_fileIndex, 0, index.Count - 1);
         _shownIndex = _shown != null ? index.Find(System.IO.Path.GetFileName(_shown.Path.AsSpan())) : -1;
         if (!sameOrder) _direction = 1;
         if (position < 0) Request();
@@ -846,7 +950,7 @@ internal sealed unsafe partial class MainWindow
 
         LoadedImage? drawn = _shown?.BestGpu != null ? _shown : null;
         if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display, ViewX, ViewY, ViewWidth, ViewHeight);
-        _thumbs?.Upload();
+        if (_thumbs != null) _thumbsUploaded += _thumbs.Upload();
         if (_ui != null)
         {
             _ui.NewFrame();
@@ -895,10 +999,21 @@ internal sealed unsafe partial class MainWindow
             if (!_fast && !_options.NoPrefetch && PrefetchStage() > _wantedStage) UpdateWanted();
             StartFolderIndexIfDue();
         }
+        if (_deferred is { } action)
+        {
+            // What a menu asked for that could not happen while the frame was being drawn.
+            _deferred = null;
+            action();
+            Invalidate();
+        }
     }
 
     // ---------------------------------------------------------------- measurements
 
+    long _folderRequestedAt, _folderListedAt;
+    bool _thumbScreenLogged;
+    int _thumbsUploaded;
+    double _thumbScreenMs = -1;
     double _lastFrameMs, _lastStepMs;
     int _frames, _intervals, _imagesShown, _steps;
     double _frameCpuMs, _frameMaxCpuMs, _frameMaxMs, _intervalMs, _intervalMaxMs, _stepMs, _stepMaxMs;
@@ -948,7 +1063,7 @@ internal sealed unsafe partial class MainWindow
         try
         {
             File.AppendAllText(_options.PerfLog,
-                $"images_shown={_imagesShown} last_index={_fileIndex + 1}/{FileCount} " +
+                $"images_shown={_imagesShown} last_index={_fileIndex + 1}/{FileCount} thumbs_uploaded={_thumbsUploaded} " +
                 $"steps={_steps} step_mean_ms={_stepMs / Math.Max(_steps, 1):F2} step_max_ms={_stepMaxMs:F2} " +
                 $"frames={_frames} cpu_mean_ms={_frameCpuMs / Math.Max(_frames, 1):F3} cpu_max_ms={_frameMaxCpuMs:F3} frame_max_ms={_frameMaxMs:F2} " +
                 $"intervals={_intervals} interval_mean_ms={(_intervals > 0 ? _intervalMs / _intervals : 0):F2} interval_max_ms={_intervalMaxMs:F2}\n");
@@ -1092,13 +1207,39 @@ internal sealed unsafe partial class MainWindow
 
     void OnKeyDown(VIRTUAL_KEY key)
     {
+        if (_dialog != Dialog.None)
+        {
+            // A dialog is open: Esc closes it, Enter confirms the one without a text field.
+            if (key == VIRTUAL_KEY.VK_ESCAPE) _dialog = Dialog.None;
+            else if (key == VIRTUAL_KEY.VK_RETURN && _dialog == Dialog.Delete) CommitDelete();
+            Invalidate();
+            return;
+        }
         LoadedImage? image = _shown is { HasSize: true } ? _shown : null;
         bool shift = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) < 0, control = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) < 0;
         switch (key)
         {
             case VIRTUAL_KEY.VK_ESCAPE:
-                if (_fullscreen) ToggleFullscreen();
+                if (_showKeys) _showKeys = false;
+                else if (_showSettings) _showSettings = false;
+                else if (_fullscreen) ToggleFullscreen();
                 else PInvoke.PostMessage(_hwnd, PInvoke.WM_CLOSE, default, default);
+                break;
+            case VIRTUAL_KEY.VK_F1:
+                _showKeys = !_showKeys;
+                break;
+            case VIRTUAL_KEY.VK_F2:
+                BeginRename();
+                break;
+            case VIRTUAL_KEY.VK_DELETE:
+                BeginDelete();
+                break;
+            case VIRTUAL_KEY.VK_O when control:
+                OpenWithDialog(folder: shift);
+                break;
+            case VIRTUAL_KEY.VK_C when control:
+                if (shift) CopyPath();
+                else CopyImage();
                 break;
             case VIRTUAL_KEY.VK_F11:
                 ToggleFullscreen();
@@ -1268,6 +1409,11 @@ internal sealed unsafe partial class MainWindow
             case WM_APP_THUMBS:
                 Invalidate(); // the frame takes the finished thumbnails in
                 return default;
+            case WM_APP_RESET_STATISTICS:
+                _frames = _intervals = _thumbsUploaded = 0;
+                _frameCpuMs = _frameMaxCpuMs = _frameMaxMs = _intervalMs = _intervalMaxMs = 0;
+                _lastPresented = 0;
+                return default;
 
             case PInvoke.WM_PAINT:
                 OnPaint();
@@ -1306,6 +1452,10 @@ internal sealed unsafe partial class MainWindow
                     case FolderTimerId:
                         RefreshFolder();
                         break;
+                    case NoticeTimerId:
+                        PInvoke.KillTimer(hwnd, NoticeTimerId);
+                        Invalidate(); // the notice has run out
+                        break;
                 }
                 return default;
 
@@ -1333,6 +1483,10 @@ internal sealed unsafe partial class MainWindow
                     Invalidate();
                 }
                 return default;
+            case PInvoke.WM_RBUTTONUP:
+                _viewMenuRequested = true; // a right click on the image
+                Invalidate();
+                return default;
             case PInvoke.WM_KEYDOWN:
                 OnKeyDown((VIRTUAL_KEY)(ushort)wParam.Value);
                 return default;
@@ -1351,6 +1505,7 @@ internal sealed unsafe partial class MainWindow
 
             case PInvoke.WM_DESTROY:
                 WriteStatistics();
+                SaveSettings();
                 StopWatching();
                 _thumbs?.Dispose();
                 _pendingPack?.Dispose();

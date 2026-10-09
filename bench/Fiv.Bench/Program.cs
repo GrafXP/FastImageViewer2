@@ -15,12 +15,13 @@ return command switch
         options.GetInt("--runs", 50), options.GetInt("--warm", 20), options.GetOrNull("--out")),
     "open" => OpenCommand.Run(repoRoot,
         options.Get("--image", Path.Combine(corpus, "single", "jpeg_24mp.jpg")),
-        options.GetInt("--runs", 30), options.GetOrNull("--out")),
+        options.GetInt("--runs", 30), options.GetOrNull("--out"), options.Has("--panels")),
     "reopen" => OpenCommand.RunWarm(repoRoot,
         options.GetOrNull("--images")?.Split(';') ?? new[] { "jpeg_12mp.jpg", "jpeg_24mp.jpg", "jpeg_24mp_422.jpg", "jpeg_50mp.jpg", "png8_24mp.png" }
             .Select(name => Path.Combine(corpus, "single", name)).ToArray(),
         options.GetInt("--runs", 15), options.GetOrNull("--out")),
-    "navigate" => NavigateCommand.Run(repoRoot, options.Get("--folder", Path.Combine(corpus, "series", "jpeg_12mp")), options.GetOrNull("--out")),
+    "navigate" => NavigateCommand.Run(repoRoot, options.Get("--folder", Path.Combine(corpus, "series", "jpeg_12mp")), options.GetOrNull("--out"), options.Has("--panels")),
+    "browse" => BrowseCommand.Run(repoRoot, options.Get("--root", corpus), options.GetOrNull("--out")),
     "thumbs" => ThumbsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out")),
     "index" => IndexCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out"), options.Has("--quick")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
@@ -33,11 +34,13 @@ static int Help()
         fivbench corpus  [--root <dir>] [--skip-folders]      generate the test corpus (default: <repo>\corpus)
         fivbench bakeoff [--image <jpg>] [--runs 50] [--warm 20] [--out <file.md>]
                                                               C# Native AOT vs C++ time to first pixel
-        fivbench open    [--image <file>] [--runs 30] [--out <file.md>]
+        fivbench open    [--image <file>] [--runs 30] [--panels] [--out <file.md>]
                                                               cold start of publish\FastImageViewer2.exe, stage by stage
         fivbench reopen  [--images <a;b;...>] [--runs 15] [--out <file.md>]
                                                               open with the viewer already running (second process hands over)
-        fivbench navigate [--folder <dir>] [--out <file.md>]  next/previous in a folder: single steps, and the arrow key held
+        fivbench navigate [--folder <dir>] [--panels] [--out <file.md>]
+                                                              next/previous in a folder: single steps, and the arrow key held
+        fivbench browse  [--root <dir>] [--out <file.md>]      the folder panel: first screen of thumbnails, scrolling 95,000 images
         fivbench thumbs  [--root <dir>] [--out <file.md>]      thumbnails: making them, and reading them back from the pack
         fivbench index   [--root <dir>] [--reps 7] [--quick] [--out <file.md>]
                                                               read and sort the corpus folders of 1k / 10k / 100k files

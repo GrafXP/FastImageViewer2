@@ -26,6 +26,20 @@ internal sealed unsafe partial class MainWindow
         fixed (byte* text = _utf8) ImGui.TextUnformatted(text, text + length);
     }
 
+    /// <summary>
+    /// Text that came from outside (file names, paths, error messages), dimmed or coloured.
+    /// Never through ImGui.TextDisabled or TextColored: those take a printf format, and a name
+    /// with a per-cent sign in it would be read as one.
+    /// </summary>
+    static void TextIn(Vector4 color, byte* text)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, color);
+        ImGui.TextUnformatted(text);
+        ImGui.PopStyleColor();
+    }
+
+    static void TextDim(byte* text) => TextIn(ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled], text);
+
     void Separator()
     {
         ImGui.SameLine();
@@ -42,10 +56,12 @@ internal sealed unsafe partial class MainWindow
 
         // Panels dock around a central area that stays empty: that is where the image is.
         uint dock = ImGui.GetID("dock"u8);
-        if (!_layoutChecked)
+        _menuDrawn = false;
+        if (!_layoutChecked || _resetLayout)
         {
+            if (!_ui!.HasSavedLayout || _resetLayout) BuildDefaultLayout(dock, viewport.WorkSize);
             _layoutChecked = true;
-            if (!_ui!.HasSavedLayout) BuildDefaultLayout(dock, viewport.WorkSize);
+            _resetLayout = false;
         }
         ImGui.DockSpaceOverViewport(dock, viewport, ImGuiDockNodeFlags.PassthruCentralNode);
 
@@ -67,7 +83,13 @@ internal sealed unsafe partial class MainWindow
 
         if (_showPerf) DrawPerfOverlay();
         if (_showDisplayPanel) DrawDisplayPanel();
+        if (_showKeys) DrawKeys();
+        if (_showSettings) DrawSettings();
         DrawMessage();
+        DrawNotice();
+        DrawViewMenu();
+        DrawDialogs();
+        if (!_menuDrawn && !_menuRequested) _menuPath = null; // the item menu has closed
     }
 
     /// <summary>The layout of a first run: folder panel on the left, filmstrip along the bottom, the image in what remains.</summary>
@@ -225,6 +247,7 @@ internal sealed unsafe partial class MainWindow
                 ImGui.Spacing();
                 ImGui.TextDisabled("folder index, ms"u8);
                 if (Utf8.TryWrite(_utf8, $"{folder.EnumerateMs,8:0.0}  read {folder.Count} entries\n{folder.SortMs,8:0.0}  sort", out n)) Put(n);
+                if (_thumbScreenMs >= 0 && Utf8.TryWrite(_utf8, $"{_thumbScreenMs,8:0.0}  first screen of thumbnails", out n)) Put(n);
             }
             ImGui.Spacing();
             if (Utf8.TryWrite(_utf8, $"{_lastFrameMs,8:0.00}  last frame (CPU)", out n)) Put(n);

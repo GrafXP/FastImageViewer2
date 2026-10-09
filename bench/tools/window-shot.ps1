@@ -8,6 +8,8 @@
 #       "move:x:y"            mouse move in client coordinates
 #       "dbl:x:y"             double click
 #       "ps:<command>"        run a PowerShell command (e.g. change files the viewer is watching)
+#       "clickw:x:y"          left click at a position in window pixels, as in an unscaled screenshot
+#       "type:text"           type characters into the focused text field
 param([string]$Exe, [string[]]$AppArgs, [string[]]$Steps, [string]$OutDir, [int]$Scale = 2)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -46,6 +48,19 @@ try {
         $a = $step -split ':'
         switch ($a[0]) {
             'wait' { Start-Sleep -Milliseconds ([int]$a[1]) }
+            'clickw' {
+                # a left click at a position given in pixels of the window as the screenshots show it (before -Scale)
+                $r = New-Object W+RECT; [void][W]::GetWindowRect($h, [ref]$r)
+                $o = New-Object W+POINT; $o.X = 0; $o.Y = 0; [void][W]::ClientToScreen($h, [ref]$o)
+                $cx = [int]$a[1] - ($o.X - $r.L); $cy = [int]$a[2] - ($o.Y - $r.T)
+                [void][W]::PostMessageW($h, 0x0200, [IntPtr]::Zero, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 60
+                [void][W]::PostMessageW($h, 0x0201, [IntPtr]1, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 60
+                [void][W]::PostMessageW($h, 0x0202, [IntPtr]::Zero, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 60
+            }
+            'type' {
+                # characters as WM_CHAR, for text fields
+                foreach ($ch in $step.Substring(5).ToCharArray()) { [void][W]::PostMessageW($h, 0x0102, [IntPtr][int]$ch, [IntPtr]::Zero); Start-Sleep -Milliseconds 30 }
+            }
             'ps' { Invoke-Expression ($step.Substring(3)) | Out-Null }
             'key' { [void][W]::PostMessageW($h, 0x0100, [IntPtr][int]$a[1], [IntPtr]::Zero) }
             'move' { [void][W]::PostMessageW($h, 0x0200, [IntPtr]::Zero, [W]::L([int]$a[1], [int]$a[2])) }

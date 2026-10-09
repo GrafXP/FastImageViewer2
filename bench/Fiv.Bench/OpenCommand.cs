@@ -53,7 +53,7 @@ public static class OpenCommand
         {
             UseShellExecute = false,
             // No prefetch and no cache: every open in this benchmark has to read and decode its file.
-            ArgumentList = { images[0], "--instance", instance, "--no-activate", "--perf-log", log, "--no-prefetch", "--cache-mb", "0", "--vram-mb", "0" },
+            ArgumentList = { images[0], "--instance", instance, "--no-activate", "--perf-log", log, "--no-prefetch", "--cache-mb", "0", "--vram-mb", "0", "--no-panels", "--profile", BenchProfile.Directory },
         })!;
         try
         {
@@ -127,7 +127,7 @@ public static class OpenCommand
         }
     }
 
-    public static int Run(string repoRoot, string image, int runs, string? outFile)
+    public static int Run(string repoRoot, string image, int runs, string? outFile, bool panels = false)
     {
         string exe = Path.Combine(repoRoot, "publish", "FastImageViewer2.exe");
         if (!File.Exists(exe))
@@ -147,7 +147,7 @@ public static class OpenCommand
             var start = new ProcessStartInfo(exe)
             {
                 UseShellExecute = false,
-                ArgumentList = { image, "--new-instance", "--no-activate", "--exit-when-loaded", "--perf-out", perfFile },
+                ArgumentList = { image, "--new-instance", "--no-activate", "--exit-when-loaded", "--perf-out", perfFile, panels ? "--browser" : "--no-panels", "--profile", BenchProfile.Directory },
             };
             long spawn = Stopwatch.GetTimestamp();
             using var process = Process.Start(start)!;
@@ -181,7 +181,7 @@ public static class OpenCommand
         File.Delete(perfFile);
 
         var sb = new StringBuilder();
-        sb.AppendLine($"Image: {Path.GetFileName(image)} ({new FileInfo(image).Length / 1e6:F1} MB). {runs} fresh processes after {warmUp} discarded.");
+        sb.AppendLine($"Image: {Path.GetFileName(image)} ({new FileInfo(image).Length / 1e6:F1} MB). {runs} fresh processes after {warmUp} discarded. Folder panel {(panels ? "open" : "closed")}.");
         sb.AppendLine("Milliseconds after process creation, median (p10–p90).");
         sb.AppendLine();
         sb.AppendLine("| Stage reached | ms |");

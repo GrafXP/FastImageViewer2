@@ -145,7 +145,7 @@ internal sealed unsafe partial class MainWindow
         if (directory != null)
         {
             Utf8Of(directory);
-            fixed (byte* text = _utf8) ImGui.TextDisabled(text);
+            fixed (byte* text = _utf8) TextDim(text);
         }
         else
         {
@@ -184,13 +184,26 @@ internal sealed unsafe partial class MainWindow
                 : (Utf8.TryWrite(_utf8, $"{folder.Count} images\0", out int b) ? b : 0);
             if (n > 0)
             {
-                fixed (byte* text = _utf8) ImGui.TextDisabled(text);
+                fixed (byte* text = _utf8) TextDim(text);
             }
         }
 
+        if (folder == null && _files.Count > 1)
+        {
+            // Files opened together from different places: a plain list of them.
+            for (int i = 0; i < _files.Count; i++)
+            {
+                Utf8Of(_files[i]);
+                ImGui.PushID(i);
+                fixed (byte* text = _utf8)
+                    if (ImGui.Selectable(text, i == _shownIndex)) Navigate(i);
+                ImGui.PopID();
+            }
+            return;
+        }
         if (folder == null || folder.Count == 0)
         {
-            ImGui.TextDisabled(_filterText.Length > 0 ? "Nothing matches the filter."u8 : FileCount > 1 ? "Several files were opened; there is no folder to list."u8 : "No images."u8);
+            ImGui.TextDisabled(_filterText.Length > 0 ? "Nothing matches the filter."u8 : "No images."u8);
             return;
         }
         EnsureThumbnails();
@@ -234,13 +247,14 @@ internal sealed unsafe partial class MainWindow
         ImGuiIOPtr io = ImGui.GetIO();
 
         _thumbs.BeginFrame(_gridSurface);
-        int order = 0;
+        int order = 0, shown = 0, ready = 0;
         for (int row = firstRow; row <= lastRow; row++)
         {
             for (int column = 0; column < columns; column++)
             {
                 int position = row * columns + column;
                 if (position >= count) break;
+                shown++;
                 var p0 = new Vector2(MathF.Floor(origin.X + column * cellWidth), MathF.Floor(origin.Y + row * cellHeight));
                 var p1 = p0 + new Vector2(cellWidth, cellHeight);
                 bool over = hovered && mouse.X >= p0.X && mouse.X < p1.X && mouse.Y >= p0.Y && mouse.Y < p1.Y;
@@ -248,7 +262,7 @@ internal sealed unsafe partial class MainWindow
                 else if (over) draw.AddRectFilled(p0 + Vector2.One, p1 - Vector2.One, ColorHover, 4);
 
                 var box = new Vector2(MathF.Floor(p0.X + (cellWidth - thumb) / 2), p0.Y + pad);
-                DrawThumbnail(draw, _gridSurface, folder, position, 1000 + order++, box, thumb);
+                if (DrawThumbnail(draw, _gridSurface, folder, position, 1000 + order++, box, thumb)) ready++;
                 if (position == _shownIndex) draw.AddRect(p0 + Vector2.One, p1 - Vector2.One, ColorCurrent, 4);
 
                 // The name, centred if it fits, cut off at the cell's edge if not.
@@ -279,23 +293,45 @@ internal sealed unsafe partial class MainWindow
             for (int column = 0; column < columns && row * columns + column < count; column++)
                 _thumbs.TryGet(_gridSurface, folder, row * columns + column, 5000 + order++, out _, out _);
         _thumbs.EndFrame(_gridSurface);
+        if (!_thumbScreenLogged && shown > 0 && ready == shown) LogThumbnailScreen(shown);
 
         ImGui.Dummy(new Vector2(1, rows * cellHeight)); // gives the scroll area its full height
         DrawItemMenu();
         ImGui.EndChild();
     }
 
-    /// <summary>Draws a file's thumbnail centred in a square of <paramref name="size"/> pixels at <paramref name="box"/>, or a placeholder while it loads.</summary>
-    void DrawThumbnail(ImDrawListPtr draw, ThumbnailSurface surface, FolderIndex folder, int position, int priority, Vector2 box, int size)
+    /// <summary>
+    /// Draws a file's thumbnail centred in a square of <paramref name="size"/> pixels at <paramref name="box"/>, or a placeholder while it loads.
+    /// Returns true once the final thumbnail is drawn (or the file is known to have none), false while a placeholder or a provisional one is.
+    /// </summary>
+    bool DrawThumbnail(ImDrawListPtr draw, ThumbnailSurface surface, FolderIndex folder, int position, int priority, Vector2 box, int size)
     {
         if (_thumbs!.TryGet(surface, folder, position, priority, out AtlasSlot slot, out bool failed))
         {
             var at = new Vector2(MathF.Floor(box.X + (size - slot.Width) / 2f), MathF.Floor(box.Y + (size - slot.Height) / 2f));
             draw.AddImage(new ImTextureRef(null, new ImTextureID(slot.Texture)), at, at + new Vector2(slot.Width, slot.Height), slot.Uv0, slot.Uv1);
+            return !slot.Provisional;
         }
-        else
+        draw.AddRectFilled(box, box + new Vector2(size, size), failed ? ColorFailed : ColorPlaceholder, 2);
+        return failed;
+    }
+
+    /// <summary>The first screenful of thumbnails of a folder is complete: note how long it took, for the overlay and the benchmark.</summary>
+    void LogThumbnailScreen(int count)
+    {
+        _thumbScreenLogged = true;
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        double listed = System.Diagnostics.Stopwatch.GetElapsedTime(_folderRequestedAt, _folderListedAt).TotalMilliseconds;
+        _thumbScreenMs = System.Diagnostics.Stopwatch.GetElapsedTime(_folderListedAt, now).TotalMilliseconds;
+        if (_options.PerfLog == null || _folderAll == null) return;
+        try
         {
-            draw.AddRectFilled(box, box + new Vector2(size, size), failed ? ColorFailed : ColorPlaceholder, 2);
+            File.AppendAllText(_options.PerfLog,
+                $"thumbs_screen count={count} size={_thumbSize} listed_ms={listed:F1} thumbs_ms={_thumbScreenMs:F1} total_ms={listed + _thumbScreenMs:F1} " +
+                $"files={_folderAll.Count} folder={Path.GetFileName(_folderAll.Directory)}\n");
+        }
+        catch (IOException)
+        {
         }
     }
 
@@ -493,14 +529,16 @@ internal sealed unsafe partial class MainWindow
             ImGui.OpenPopup("item"u8);
         }
         if (!ImGui.BeginPopup("item"u8)) return;
+        _menuDrawn = true;
         if (_menuPath is { } path)
         {
-            if (ImGui.MenuItem("Show in Explorer"u8)) FileActions.ShowInExplorer(path);
-            if (ImGui.MenuItem("Copy path"u8)) ImGui.SetClipboardText(path);
-            if (ImGui.MenuItem("Copy name"u8)) ImGui.SetClipboardText(Path.GetFileName(path));
+            DrawFileItems();
+            if (ImGui.MenuItem("Copy name"u8) && FileActions.CopyText(_hwnd, Path.GetFileName(path))) Notice("Name copied.");
         }
         ImGui.EndPopup();
     }
+
+    bool _menuDrawn; // the item menu was open in this frame
 
     // ---------------------------------------------------------------- views of the folder
 
@@ -510,7 +548,7 @@ internal sealed unsafe partial class MainWindow
         if (_folderAll == null) return;
         string filter = _filterText;
         FolderIndex view = filter.Length == 0 ? _folderAll : _folderAll.Where(name => name.Contains(filter, StringComparison.OrdinalIgnoreCase));
-        AdoptFolder(view);
+        AdoptFolder(view, firstIfGone: filter.Length > 0);
         _scrollBrowserToCurrent = _scrollStripToCurrent = true;
     }
 }

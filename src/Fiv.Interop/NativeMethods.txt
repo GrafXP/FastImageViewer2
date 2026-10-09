@@ -142,3 +142,21 @@ DeleteObject
 
 IWICBitmapScaler
 
+
+// --- dialogs, clipboard, recycle bin
+IFileOpenDialog
+IShellItem
+IShellItemArray
+SIGDN
+FILEOPENDIALOGOPTIONS
+CoTaskMemFree
+SHFileOperationW
+OpenClipboard
+CloseClipboard
+EmptyClipboard
+SetClipboardData
+GlobalAlloc
+GlobalLock
+GlobalUnlock
+GlobalFree
+MonitorFromRect

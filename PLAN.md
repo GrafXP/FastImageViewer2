@@ -1,6 +1,6 @@
 # FastImageViewer2 — Plan
 
-Status: **M0, M1 and M2 done and measured; M3 is next.** What each milestone left open is listed
+Status: **M0, M1 and M2 done and measured; M3 built and measured, with untested items** (see M3 in section 9); **M4 is next.** What each milestone left open is listed
 under it in section 9. Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
 Measured numbers: section 2.1 (M0), 2.2 (M1) and 2.3 (M2, the current state). Build and keys: `README.md`.
 
@@ -529,6 +529,40 @@ while shown; sorting by date.
 - Basic file operations, settings, recent items, key map, docking layout, fullscreen.
 - Exit: thumbnail budgets met; scrolling a 100k folder stays at refresh rate while thumbnails
   stream in.
+
+*State 2026-10-10: built and measured; three of four exit budgets met, some items untested.*
+Reproduce with `fivbench browse` and `fivbench thumbs`.
+
+| Budget | Result |
+|---|---|
+| First screen of thumbnails, folder seen before ≤ 100 ms | **4–18 ms** (21 thumbnails of 128 px, from the pack on disk) — met |
+| First screen, new folder of camera JPEGs ≤ 300 ms | **231–260 ms** for 21 thumbnails of 12 MP JPEGs — met at this panel size; a screen with more thumbnails takes proportionally longer |
+| Thumbnail generation ≥ 300 images/s | **213/s** from 12 MP JPEGs on 10 threads — not met; 7,148/s when the camera's embedded thumbnail is shown first as a stand-in |
+| Scrolling a 100k folder at refresh rate while thumbnails stream in | **6.95 ms between frames (144 Hz), longest 11.8 ms**, 0.18 ms CPU per frame, 366 thumbnails made on the way — met |
+
+Also measured: a folder of 95,000 images is listed 52 ms after it is asked for; a pack of 2,000
+thumbnails opens in 0.7 ms and is 27.5 MB; with the folder panel open, cold start (first pixels
+99 ms, full 286 ms) and navigation (39 of 39 images at 30/s, 1.2 ms per step) are unchanged.
+
+Built: thumbnails from the cheapest source (pack, embedded EXIF thumbnail, reduced JPEG decode,
+WIC), one pack per folder under the profile's `thumbs` with a size cap, a GPU atlas at display
+size, low-priority thumbnail workers whose requests are cancelled when scrolled away; ImGui
+docking with the image in the centre; folder panel with virtualised grid and sortable details
+list, filter by name, thumbnail size, subfolders and up; filmstrip; selection (click, Ctrl,
+Shift, Ctrl+A, Ctrl+I); opening folders; right-click menu with recent files and folders; Open
+dialogs; rename, move to Recycle Bin, copy image / path / name, show in Explorer; settings
+(window position, panels, sort, cache sizes) in `settings.json`; key list (F1); `--profile`.
+Checked in the running viewer: grid, list, filter, filmstrip, mixed formats and rotated
+thumbnails, first-run layout, rename, delete, saved settings. Found and fixed on the way: a
+crash when switching folders, text with a per-cent sign being read as a format string, Enter
+not confirming the delete dialog.
+**Written but not tested:** Open dialogs, copy image to clipboard, the Settings window, recent
+menus, restoring a maximised window, drag and drop, sorting by dimensions, multi-select with
+Shift, the list of several opened files. **Not done:** unit tests for `Settings`; filters other
+than by name; reading settings costs about 4 ms of every cold start (12.3 → 16.5 ms) and should
+be made cheaper or later; opening a 95,000-image folder has one frame of about 10 ms; sorting
+by dimensions only uses the dimensions known so far; key bindings are fixed, not configurable;
+tabs for several open folders.
 
 **M4 — Compare I: views and switching**
 - Compare set of 2…N images from selection, drag-in or command line.
