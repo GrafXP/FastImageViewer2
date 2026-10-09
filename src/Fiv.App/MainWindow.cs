@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using Fiv.Imaging;
 using Fiv.Indexing;
 using Fiv.Render;
+using Fiv.Thumbnails;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
@@ -31,6 +32,7 @@ internal sealed unsafe partial class MainWindow
     const uint WM_APP_UI = PInvoke.WM_APP + 4;
     const uint WM_APP_FOLDER = PInvoke.WM_APP + 5;
     const uint WM_APP_FOLDER_CHANGED = PInvoke.WM_APP + 6;
+    const uint WM_APP_THUMBS = PInvoke.WM_APP + 7;
     const nuint ShowTimerId = 1, SettleTimerId = 2, FolderTimerId = 3;
     const uint ShowTimeoutMs = 150;
 
@@ -80,7 +82,8 @@ internal sealed unsafe partial class MainWindow
     readonly List<string> _files = [];
     FolderIndex? _folder;
     string? _folderFor;   // the file whose folder is being, or has been, indexed
-    readonly System.Collections.Concurrent.ConcurrentQueue<(string File, FolderIndex? Index, FileSystemWatcher? Watcher)> _folderResults = new();
+    readonly System.Collections.Concurrent.ConcurrentQueue<(string Token, FolderIndex? Index, FileSystemWatcher? Watcher, ThumbnailPack? Pack)> _folderResults = new();
+    ThumbnailPack? _pendingPack; // opened with the folder, before there is a GPU to show thumbnails with
     FolderSort _sort = FolderSort.Name;
     bool _sortDescending;
     FileSystemWatcher? _watcher;
@@ -101,13 +104,43 @@ internal sealed unsafe partial class MainWindow
     public MainWindow(Options options)
     {
         _options = options;
+        _showBrowser = options.ShowBrowser;
+        _showFilmstrip = options.ShowFilmstrip;
         _files.AddRange(options.Files);
         _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE), (long)options.CacheMb << 20, (long)options.VramMb << 20);
     }
 
     int StatusBarHeight => (int)Math.Round(24 * _dpiScale);
-    int ViewWidth => Math.Max(1, _clientWidth);
-    int ViewHeight => Math.Max(1, _clientHeight - StatusBarHeight);
+
+    // The part of the client area the image has: everything above the status bar until the
+    // panels are laid out, then what the docking layout leaves in the middle.
+    int _viewX, _viewY, _viewWidth, _viewHeight;
+    bool _viewFromLayout;
+    int ViewX => _viewX;
+    int ViewY => _viewY;
+    int ViewWidth => Math.Max(1, _viewWidth);
+    int ViewHeight => Math.Max(1, _viewHeight);
+
+    void UseWholeClientAsView()
+    {
+        if (_viewFromLayout) return;
+        _viewX = _viewY = 0;
+        _viewWidth = _clientWidth;
+        _viewHeight = _clientHeight - StatusBarHeight;
+    }
+
+    /// <summary>The docking layout says where the image goes.</summary>
+    void SetViewRect(int x, int y, int width, int height)
+    {
+        _viewFromLayout = true;
+        if (x == _viewX && y == _viewY && width == _viewWidth && height == _viewHeight) return;
+        _viewX = x;
+        _viewY = y;
+        _viewWidth = width;
+        _viewHeight = height;
+        if (_view.Fit && _shown is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+        Invalidate(); // the image was already drawn for the old rectangle in this frame
+    }
 
     int FileCount => _folder?.Count ?? _files.Count;
     string FileAt(int index) => _folder != null ? _folder.PathAt(index) : _files[index];
@@ -117,12 +150,22 @@ internal sealed unsafe partial class MainWindow
         s_instance = this;
         PlanWindow();
         StartDeviceThread();
-        if (_files.Count > 0) Request();
+        if (_files.Count == 1 && Directory.Exists(_files[0]))
+        {
+            string directory = _files[0];
+            _files.Clear();
+            StartFolderIndex(directory, directory);
+        }
+        else if (_files.Count > 0)
+        {
+            Request();
+        }
         CreateWindow();
         Perf.Stamp("window");
 
         // Whatever the workers finished before there was a window to notify.
         OnPipeline();
+        OnFolderIndexed();
         OnDeviceReady();
         if (_files.Count == 0) EnsureVisible();
         else PInvoke.SetTimer(_hwnd, ShowTimerId, ShowTimeoutMs, null);
@@ -160,6 +203,7 @@ internal sealed unsafe partial class MainWindow
         _windowY = work.top + (workHeight - _windowHeight) / 2;
         _clientWidth = _windowWidth - frameWidth;
         _clientHeight = _windowHeight - frameHeight;
+        UseWholeClientAsView();
     }
 
     void CreateWindow()
@@ -186,6 +230,7 @@ internal sealed unsafe partial class MainWindow
         _clientWidth = client.right;
         _clientHeight = client.bottom;
         _dpiScale = PInvoke.GetDpiForWindow(_hwnd) / 96.0;
+        UseWholeClientAsView();
         Interlocked.Exchange(ref _hwndForWorkers, (nint)_hwnd.Value);
     }
 
@@ -257,29 +302,83 @@ internal sealed unsafe partial class MainWindow
     {
         var list = files.ToList();
         if (list.Count == 0) return;
-        _files.Clear();
-        _files.AddRange(list);
-
-        // Another file of the folder already indexed: keep the index.
-        if (list.Count == 1 && _folder != null &&
-            string.Equals(System.IO.Path.GetDirectoryName(list[0]), _folder.Directory, StringComparison.OrdinalIgnoreCase) &&
-            _folder.Find(System.IO.Path.GetFileName(list[0].AsSpan())) is >= 0 and int position)
+        if (list.Count == 1 && Directory.Exists(list[0]))
         {
-            _fileIndex = position;
+            OpenFolder(list[0]);
+            return;
+        }
+
+        // Another file of the folder already indexed: keep the index (and drop a filter that hides the file).
+        if (list.Count == 1 && _folderAll != null &&
+            string.Equals(System.IO.Path.GetDirectoryName(list[0]), _folderAll.Directory, StringComparison.OrdinalIgnoreCase) &&
+            _folderAll.Find(System.IO.Path.GetFileName(list[0].AsSpan())) >= 0)
+        {
+            ReadOnlySpan<char> name = System.IO.Path.GetFileName(list[0].AsSpan());
+            if (_folder == null || _folder.Find(name) < 0)
+            {
+                ClearFilter();
+                _folder = _folderAll;
+            }
+            _files.Clear();
+            _files.AddRange(list);
+            _fileIndex = _folder.Find(name);
         }
         else
         {
-            StopWatching();
-            PInvoke.KillTimer(_hwnd, FolderTimerId);
-            _folderRefreshQueued = _folderRefreshRunning = _folderChangedAgain = false;
-            _folder = null;
-            _folderFor = null;
-            _fileIndex = 0;
-            _shownIndex = -1; // positions of the old list mean nothing in the new one
+            LeaveFolder();
+            _files.Clear();
+            _files.AddRange(list);
         }
         _direction = 1;
         _fast = false;
+        _scrollBrowserToCurrent = _scrollStripToCurrent = true;
         Request();
+        SelectCurrent();
+    }
+
+    /// <summary>Shows a folder: lists it, then its first image.</summary>
+    void OpenFolder(string directory)
+    {
+        try
+        {
+            directory = System.IO.Path.GetFullPath(directory);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return;
+        }
+        LeaveFolder();
+        _files.Clear();
+        _target = null;
+        _wants.Clear();
+        _pipeline.Request(default, ViewWidth, ViewHeight);
+        _direction = 1;
+        _fast = false;
+        _scrollBrowserToCurrent = _scrollStripToCurrent = true;
+        StartFolderIndex(directory, directory);
+        Invalidate();
+    }
+
+    /// <summary>Forgets the folder being browsed: its index, watcher, filter and selection.</summary>
+    void LeaveFolder()
+    {
+        StopWatching();
+        if (!_hwnd.IsNull) PInvoke.KillTimer(_hwnd, FolderTimerId);
+        _folderRefreshQueued = _folderRefreshRunning = _folderChangedAgain = false;
+        _folder = null;
+        _folderAll = null;
+        _folderFor = null;
+        _fileIndex = 0;
+        _shownIndex = -1; // positions of the old list mean nothing in the new one
+        _selection.Clear();
+        _selectionAnchor = -1;
+        ClearFilter();
+    }
+
+    void ClearFilter()
+    {
+        _filterText = "";
+        Array.Clear(_filter);
     }
 
     void Navigate(int index)
@@ -292,7 +391,9 @@ internal sealed unsafe partial class MainWindow
         _fast = Stopwatch.GetElapsedTime(_lastStep, now).TotalMilliseconds < FastStepMs;
         _lastStep = now;
         _fileIndex = index;
+        _scrollBrowserToCurrent = _scrollStripToCurrent = true;
         Request();
+        SelectCurrent();
         // Full-resolution work is held back while the user runs through the folder.
         PInvoke.SetTimer(_hwnd, SettleTimerId, SettleMs, null);
     }
@@ -452,37 +553,56 @@ internal sealed unsafe partial class MainWindow
     /// </summary>
     void StartFolderIndexIfDue()
     {
-        if (_files.Count != 1 || _folder != null || _folderFor != null || _target == null) return;
-        if (_target.FirstFrame != 0 || _target.Error != null || (_stampedGdi && _gpuError != null)) StartFolderIndex(_files[0]);
+        if (_files.Count != 1 || _folderAll != null || _folderFor != null || _target == null) return;
+        if (_target.FirstFrame == 0 && _target.Error == null && !(_stampedGdi && _gpuError != null)) return;
+        if (System.IO.Path.GetDirectoryName(_files[0]) is { Length: > 0 } directory) StartFolderIndex(directory, _files[0]);
     }
 
     // ---------------------------------------------------------------- folder
 
-    /// <summary>Reads and sorts the folder of <paramref name="file"/> on a background thread.</summary>
-    void StartFolderIndex(string file)
+    /// <summary>
+    /// Reads and sorts a folder on a background thread, and gets what goes with it: the watcher
+    /// and the folder's thumbnail pack. <paramref name="token"/> says what the result is for (the
+    /// file that was opened, or the folder); a result whose token is no longer current is dropped.
+    /// </summary>
+    void StartFolderIndex(string directory, string token)
     {
-        if (System.IO.Path.GetDirectoryName(file) is not { Length: > 0 } directory) return;
-        _folderFor = file;
+        _folderFor = token;
         _folderRefreshRunning = true;
         FolderSort sort = _sort;
         bool descending = _sortDescending;
         bool watch = _watcher == null || !string.Equals(_watcher.Path, directory, StringComparison.OrdinalIgnoreCase);
+        ThumbnailPack? currentPack = _thumbs?.Pack ?? _pendingPack;
+        string thumbsRoot = _options.ThumbsDir;
         new Thread(() =>
         {
             FolderIndex? index = null;
             FileSystemWatcher? watcher = null;
+            ThumbnailPack? opened = null;
             try
             {
                 // The watcher first, so that a change between reading and watching is not missed.
                 // (Creating one takes some 10 ms the first time, which is why it happens here.)
                 if (watch) watcher = CreateWatcher(directory);
                 index = FolderIndex.Build(directory, sort, descending);
+
+                // The pack knows the dimensions of every image it has seen before.
+                ThumbnailPack pack = currentPack != null && string.Equals(currentPack.Folder, directory, StringComparison.OrdinalIgnoreCase)
+                    ? currentPack
+                    : opened = ThumbnailPack.Open(thumbsRoot, directory);
+                FolderListing listing = index.Listing;
+                for (int i = 0; i < listing.Count; i++)
+                {
+                    if (!pack.TryGet(listing.Name(i), listing.Size(i), listing.ModifiedFileTime(i), out PackEntry entry) || entry.Width <= 0) continue;
+                    bool swap = entry.Orientation.SwapsAxes();
+                    listing.SetDimensions(i, swap ? entry.Height : entry.Width, swap ? entry.Width : entry.Height);
+                }
             }
             catch (IOException)
             {
                 // No index: the file stays the only one to show.
             }
-            _folderResults.Enqueue((file, index, watcher));
+            _folderResults.Enqueue((token, index, watcher, opened));
             Post(WM_APP_FOLDER);
         }) { IsBackground = true, Name = "fiv index" }.Start();
     }
@@ -492,19 +612,42 @@ internal sealed unsafe partial class MainWindow
     {
         while (_folderResults.TryDequeue(out var result))
         {
-            // A result for a file the user has since left (another Open) is ignored.
-            if (result.File != _folderFor)
+            // A result for a file or folder the user has since left is ignored.
+            if (result.Token != _folderFor)
             {
                 result.Watcher?.Dispose();
+                result.Pack?.Dispose();
                 continue;
             }
             _folderRefreshRunning = false;
+            // A file opened on its own that the folder's index does not list (not an image type) stays on its own.
+            bool unlisted = result.Index != null && _folderAll == null && _files.Count == 1 &&
+                result.Index.Find(System.IO.Path.GetFileName(_files[0].AsSpan())) < 0;
+            if (result.Index == null || unlisted)
+            {
+                result.Watcher?.Dispose();
+                result.Pack?.Dispose();
+                continue;
+            }
             if (result.Watcher != null)
             {
                 StopWatching();
                 _watcher = result.Watcher;
             }
-            if (result.Index != null) AdoptFolder(result.Index);
+            if (result.Pack != null)
+            {
+                if (_thumbs != null)
+                {
+                    _thumbs.SetPack(result.Pack);
+                }
+                else
+                {
+                    _pendingPack?.Dispose();
+                    _pendingPack = result.Pack;
+                }
+            }
+            _folderAll = result.Index;
+            ApplyView();
         }
         if (!_folderRefreshRunning && _folderChangedAgain)
         {
@@ -513,16 +656,17 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
+    /// <summary>
+    /// Makes a view of the folder (newly read, re-sorted or filtered) the list that the panels
+    /// show and next/previous walk. The image on show stays if the view has it.
+    /// </summary>
     void AdoptFolder(FolderIndex index)
     {
-        if (FileCount == 0) return;
-        string current = FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1));
-        ReadOnlySpan<char> name = System.IO.Path.GetFileName(current.AsSpan());
-        int position = index.Find(name);
-        if (_folder == null && position < 0) return; // the opened file is not of a type the index lists
+        string? current = FileCount > 0 ? FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1)) : null;
+        int position = current == null ? -1 : index.Find(System.IO.Path.GetFileName(current.AsSpan()));
         if (index.Count == 0)
         {
-            // Everything was deleted.
+            // Everything was deleted, or nothing matches the filter.
             _folder = index;
             _target = null;
             _wants.Clear();
@@ -538,13 +682,14 @@ internal sealed unsafe partial class MainWindow
         }
         bool sameOrder = _folder != null && _folder.Sort == index.Sort && _folder.Descending == index.Descending;
         _folder = index;
-        // The current file is gone: its former place in the list is the nearest thing to it.
-        _fileIndex = position >= 0 ? position : Math.Min(_fileIndex, index.Count - 1);
+        // The current file is gone (or filtered out): its former place in the list is the nearest thing to it.
+        _fileIndex = position >= 0 ? position : Math.Clamp(_fileIndex, 0, index.Count - 1);
         _shownIndex = _shown != null ? index.Find(System.IO.Path.GetFileName(_shown.Path.AsSpan())) : -1;
         if (!sameOrder) _direction = 1;
         if (position < 0) Request();
         else UpdateWanted(); // same image, new neighbours; a changed file is reloaded because its size or time differs
         AdvanceShown();
+        SelectCurrent();
         Invalidate();
     }
 
@@ -582,7 +727,7 @@ internal sealed unsafe partial class MainWindow
     /// <summary>Something in the folder changed. Notifications come in bursts, so the folder is re-read a little later, once.</summary>
     void OnFolderChanged()
     {
-        if (_folder == null) return;
+        if (_folderAll == null) return;
         if (_folderRefreshRunning)
         {
             _folderChangedAgain = true;
@@ -597,15 +742,18 @@ internal sealed unsafe partial class MainWindow
     {
         PInvoke.KillTimer(_hwnd, FolderTimerId);
         _folderRefreshQueued = false;
-        if (_folder == null || FileCount == 0) return;
-        StartFolderIndex(FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1)));
+        if (_folderAll == null) return;
+        StartFolderIndex(_folderAll.Directory, _folderFor ?? _folderAll.Directory);
     }
 
     void SetSort(FolderSort sort, bool descending)
     {
         _sort = sort;
         _sortDescending = descending;
-        if (_folder != null) AdoptFolder(_folder.Sorted(sort, descending));
+        _syncTableSort = true;
+        if (_folderAll == null) return;
+        _folderAll = _folderAll.Sorted(sort, descending);
+        ApplyView();
     }
 
     // ---------------------------------------------------------------- GPU
@@ -636,7 +784,7 @@ internal sealed unsafe partial class MainWindow
             // is already presenting frames.
             try
             {
-                var ui = new Ui(gpu, _dpiScale);
+                var ui = new Ui(gpu, _dpiScale, System.IO.Path.Combine(_options.ProfileDir, "layout.ini"));
                 Perf.Stamp("ui prepared");
                 Interlocked.Exchange(ref _pendingUi, ui);
                 Post(WM_APP_UI);
@@ -688,7 +836,7 @@ internal sealed unsafe partial class MainWindow
     }
 
     Affine2 ImageToScreen(LoadedImage image, in ViewState view) =>
-        view.ToScreen(ViewWidth, ViewHeight).After(image.Orientation.ToUpright(image.Width, image.Height));
+        Affine2.ScaleTranslate(1, 1, ViewX, ViewY).After(view.ToScreen(ViewWidth, ViewHeight)).After(image.Orientation.ToUpright(image.Width, image.Height));
 
     void RenderFrame()
     {
@@ -697,7 +845,8 @@ internal sealed unsafe partial class MainWindow
         gpu.BeginFrame(0.11f, 0.11f, 0.12f);
 
         LoadedImage? drawn = _shown?.BestGpu != null ? _shown : null;
-        if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display);
+        if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display, ViewX, ViewY, ViewWidth, ViewHeight);
+        _thumbs?.Upload();
         if (_ui != null)
         {
             _ui.NewFrame();
@@ -914,6 +1063,7 @@ internal sealed unsafe partial class MainWindow
         if (width <= 0 || height <= 0) return; // minimised
         _clientWidth = width;
         _clientHeight = height;
+        UseWholeClientAsView();
         _gpu?.Resize(width, height);
         if (_view.Fit && _shown is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
         Invalidate();
@@ -925,7 +1075,7 @@ internal sealed unsafe partial class MainWindow
         var point = new System.Drawing.Point(screenX, screenY);
         PInvoke.ScreenToClient(_hwnd, &point);
         double factor = Math.Pow(WheelZoomStep, delta / (double)PInvoke.WHEEL_DELTA);
-        _view.ZoomAt(_view.Zoom * factor, point.X, point.Y, ViewWidth, ViewHeight);
+        _view.ZoomAt(_view.Zoom * factor, point.X - ViewX, point.Y - ViewY, ViewWidth, ViewHeight);
         Invalidate();
     }
 
@@ -943,7 +1093,7 @@ internal sealed unsafe partial class MainWindow
     void OnKeyDown(VIRTUAL_KEY key)
     {
         LoadedImage? image = _shown is { HasSize: true } ? _shown : null;
-        bool shift = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) < 0;
+        bool shift = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) < 0, control = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) < 0;
         switch (key)
         {
             case VIRTUAL_KEY.VK_ESCAPE:
@@ -972,7 +1122,8 @@ internal sealed unsafe partial class MainWindow
                 if (image != null) _view.ZoomAt(_view.Zoom / WheelZoomStep, ViewWidth / 2.0, ViewHeight / 2.0, ViewWidth, ViewHeight);
                 break;
             case VIRTUAL_KEY.VK_I:
-                _display.Sharp = !_display.Sharp;
+                if (control) SelectAll(invert: true);
+                else _display.Sharp = !_display.Sharp;
                 break;
             case VIRTUAL_KEY.VK_L:
                 _keepView = !_keepView;
@@ -982,6 +1133,39 @@ internal sealed unsafe partial class MainWindow
                 if (shift) SetSort(_sort, !_sortDescending);
                 else SetSort((FolderSort)(((int)_sort + 1) % 4), _sortDescending);
                 break;
+            case VIRTUAL_KEY.VK_B:
+                _showBrowser = !_showBrowser;
+                _scrollBrowserToCurrent = true;
+                break;
+            case VIRTUAL_KEY.VK_T:
+                _showFilmstrip = !_showFilmstrip;
+                _scrollStripToCurrent = true;
+                break;
+            case VIRTUAL_KEY.VK_TAB:
+            {
+                // Both panels away, or back as they were.
+                if (_showBrowser || _showFilmstrip)
+                {
+                    _panelsBeforeHide = (_showBrowser, _showFilmstrip);
+                    _showBrowser = _showFilmstrip = false;
+                }
+                else
+                {
+                    (_showBrowser, _showFilmstrip) = _panelsBeforeHide is (false, false) ? (true, false) : _panelsBeforeHide;
+                    _scrollBrowserToCurrent = _scrollStripToCurrent = true;
+                }
+                break;
+            }
+            case VIRTUAL_KEY.VK_UP when _showBrowser && _browserMode == BrowserMode.Grid:
+                Navigate(_fileIndex - _gridColumns);
+                break;
+            case VIRTUAL_KEY.VK_DOWN when _showBrowser && _browserMode == BrowserMode.Grid:
+                Navigate(_fileIndex + _gridColumns);
+                break;
+            case VIRTUAL_KEY.VK_A when control:
+                SelectAll(invert: false);
+                break;
+
             case VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_NEXT or VIRTUAL_KEY.VK_SPACE:
                 Navigate(_fileIndex + 1);
                 break;
@@ -1081,6 +1265,9 @@ internal sealed unsafe partial class MainWindow
             case WM_APP_FOLDER_CHANGED:
                 OnFolderChanged();
                 return default;
+            case WM_APP_THUMBS:
+                Invalidate(); // the frame takes the finished thumbnails in
+                return default;
 
             case PInvoke.WM_PAINT:
                 OnPaint();
@@ -1141,7 +1328,7 @@ internal sealed unsafe partial class MainWindow
             case PInvoke.WM_LBUTTONDBLCLK:
                 if (_shown is { HasSize: true } image)
                 {
-                    if (_view.Fit || _view.Zoom != 1) _view.ZoomAt(1, LowWord(lParam.Value), HighWord(lParam.Value), ViewWidth, ViewHeight);
+                    if (_view.Fit || _view.Zoom != 1) _view.ZoomAt(1, LowWord(lParam.Value) - ViewX, HighWord(lParam.Value) - ViewY, ViewWidth, ViewHeight);
                     else _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
                     Invalidate();
                 }
@@ -1165,6 +1352,8 @@ internal sealed unsafe partial class MainWindow
             case PInvoke.WM_DESTROY:
                 WriteStatistics();
                 StopWatching();
+                _thumbs?.Dispose();
+                _pendingPack?.Dispose();
                 PInvoke.PostQuitMessage(0);
                 return default;
         }

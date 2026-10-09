@@ -39,7 +39,7 @@ public sealed unsafe class WorkItem
 /// value (the oldest among equals). Priorities can be changed and items cancelled while queued;
 /// a running item is told through its cancel flag. Threads start when first needed.
 /// </summary>
-public sealed class WorkScheduler(int maxWorkers, string name)
+public sealed class WorkScheduler(int maxWorkers, string name, ThreadPriority threadPriority = ThreadPriority.Normal)
 {
     readonly object _gate = new();
     readonly List<WorkItem> _queue = [];
@@ -62,7 +62,7 @@ public sealed class WorkScheduler(int maxWorkers, string name)
             else if (_workers < MaxWorkers)
             {
                 _workers++;
-                new Thread(Work) { IsBackground = true, Name = $"{name} {_workers}" }.Start();
+                new Thread(Work) { IsBackground = true, Name = $"{name} {_workers}", Priority = threadPriority }.Start();
             }
         }
         return item;

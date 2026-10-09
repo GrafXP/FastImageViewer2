@@ -18,6 +18,33 @@ public sealed unsafe partial class FolderListing
 
     public int Count { get; private set; }
 
+    /// <summary>The names of the subdirectories, in the order the file system returned them.</summary>
+    public IReadOnlyList<string> Directories => _directories;
+
+    readonly List<string> _directories = [];
+    long[]? _dimensions; // width << 32 | height; 0: not known yet
+
+    /// <summary>
+    /// Pixel dimensions are not in the directory; they are filled in as they become known (from
+    /// the thumbnail cache, a header probe or a decode), from any thread.
+    /// </summary>
+    public void SetDimensions(int index, int width, int height)
+    {
+        long[] dimensions = _dimensions ?? Interlocked.CompareExchange(ref _dimensions, new long[Count], null) ?? _dimensions!;
+        Volatile.Write(ref dimensions[index], (long)width << 32 | (uint)height);
+    }
+
+    public bool TryGetDimensions(int index, out int width, out int height)
+    {
+        long packed = _dimensions == null ? 0 : Volatile.Read(ref _dimensions[index]);
+        width = (int)(packed >> 32);
+        height = (int)packed;
+        return packed != 0;
+    }
+
+    /// <summary>Width times height, 0 while unknown. What sorting by dimensions compares.</summary>
+    public long PixelCount(int index) => TryGetDimensions(index, out int width, out int height) ? (long)width * height : 0;
+
     public ReadOnlySpan<char> Name(int index) => _names.AsSpan(_nameStart[index], _nameStart[index + 1] - _nameStart[index]);
     public long Size(int index) => _size[index];
 
@@ -51,7 +78,7 @@ public sealed unsafe partial class FolderListing
     public static FolderListing Read(string directory, bool imagesOnly = true)
     {
         const uint FileListDirectory = 1, ShareAll = 7, OpenExisting = 3, BackupSemantics = 0x02000000;
-        const uint AttributeDirectory = 0x10;
+        const uint AttributeDirectory = 0x10, AttributeHidden = 0x2, AttributeSystem = 0x4;
         const int FileFullDirectoryInfo = 14, ErrorNoMoreFiles = 18;
         const int BufferSize = 256 * 1024;
 
@@ -69,10 +96,16 @@ public sealed unsafe partial class FolderListing
             {
                 for (var entry = (FileFullDirInfo*)buffer; ; entry = (FileFullDirInfo*)((byte*)entry + entry->NextEntryOffset))
                 {
-                    if ((entry->FileAttributes & AttributeDirectory) == 0)
+                    var name = new ReadOnlySpan<char>((byte*)entry + FileFullDirInfo.FileNameOffset, (int)entry->FileNameLength / 2);
+                    if ((entry->FileAttributes & AttributeDirectory) != 0)
                     {
-                        var name = new ReadOnlySpan<char>((byte*)entry + FileFullDirInfo.FileNameOffset, (int)entry->FileNameLength / 2);
-                        if (!imagesOnly || ImageFormats.IsImageFileName(name)) listing.Add(name, entry->EndOfFile, entry->LastWriteTime);
+                        // Hidden and system directories ($RECYCLE.BIN, System Volume Information) are not for browsing.
+                        if (name is not "." and not ".." && (entry->FileAttributes & (AttributeHidden | AttributeSystem)) == 0)
+                            listing._directories.Add(name.ToString());
+                    }
+                    else if (!imagesOnly || ImageFormats.IsImageFileName(name))
+                    {
+                        listing.Add(name, entry->EndOfFile, entry->LastWriteTime);
                     }
                     if (entry->NextEntryOffset == 0) break;
                 }

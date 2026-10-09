@@ -33,22 +33,66 @@ internal sealed unsafe partial class MainWindow
         ImGui.SameLine();
     }
 
+    bool _layoutChecked;
+
     void DrawUi()
     {
-        DrawStatusBar();
+        ImGuiViewportPtr viewport = ImGui.GetMainViewport();
+        DrawStatusBar(viewport); // takes its strip off the bottom; the dock space gets the rest
+
+        // Panels dock around a central area that stays empty: that is where the image is.
+        uint dock = ImGui.GetID("dock"u8);
+        if (!_layoutChecked)
+        {
+            _layoutChecked = true;
+            if (!_ui!.HasSavedLayout) BuildDefaultLayout(dock, viewport.WorkSize);
+        }
+        ImGui.DockSpaceOverViewport(dock, viewport, ImGuiDockNodeFlags.PassthruCentralNode);
+
+        if (_showBrowser)
+        {
+            ImGui.SetNextWindowSize(new Vector2(420, 600) * (float)_dpiScale, ImGuiCond.FirstUseEver);
+            if (ImGui.Begin("Folder"u8, ref _showBrowser)) DrawBrowser();
+            ImGui.End();
+        }
+        if (_showFilmstrip)
+        {
+            ImGui.SetNextWindowSize(new Vector2(900, 140) * (float)_dpiScale, ImGuiCond.FirstUseEver);
+            if (ImGui.Begin("Filmstrip"u8, ref _showFilmstrip, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)) DrawFilmstrip();
+            ImGui.End();
+        }
+
+        ImGuiDockNodePtr central = ImGuiP.DockBuilderGetCentralNode(dock);
+        if (!central.IsNull) SetViewRect((int)central.Pos.X, (int)central.Pos.Y, (int)central.Size.X, (int)central.Size.Y);
+
         if (_showPerf) DrawPerfOverlay();
         if (_showDisplayPanel) DrawDisplayPanel();
         DrawMessage();
     }
 
-    void DrawStatusBar()
+    /// <summary>The layout of a first run: folder panel on the left, filmstrip along the bottom, the image in what remains.</summary>
+    void BuildDefaultLayout(uint dock, Vector2 size)
+    {
+        const ImGuiDockNodeFlags dockSpace = (ImGuiDockNodeFlags)(1 << 10); // ImGuiDockNodeFlags_DockSpace, an internal flag
+        ImGuiP.DockBuilderRemoveNode(dock);
+        ImGuiP.DockBuilderAddNode(dock, dockSpace);
+        ImGuiP.DockBuilderSetNodeSize(dock, size);
+        uint left, rest, bottom, centre;
+        ImGuiP.DockBuilderSplitNode(dock, ImGuiDir.Left, 0.26f, &left, &rest);
+        ImGuiP.DockBuilderSplitNode(rest, ImGuiDir.Down, 0.15f, &bottom, &centre);
+        ImGuiP.DockBuilderDockWindow("Folder"u8, left);
+        ImGuiP.DockBuilderDockWindow("Filmstrip"u8, bottom);
+        ImGuiP.DockBuilderFinish(dock);
+    }
+
+    void DrawStatusBar(ImGuiViewportPtr viewport)
     {
         float scale = (float)_dpiScale;
-        int height = StatusBarHeight;
-        ImGui.SetNextWindowPos(new Vector2(0, _clientHeight - height));
-        ImGui.SetNextWindowSize(new Vector2(_clientWidth, height));
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8 * scale, 2 * scale));
-        if (ImGui.Begin("status"u8, PinnedWindow | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        bool open;
+        fixed (byte* name = "##status"u8)
+            open = ImGuiP.BeginViewportSideBar(name, ref *viewport.Handle, ImGuiDir.Down, StatusBarHeight, PinnedWindow | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        if (open)
         {
             LoadedImage? image = _shown;
             if (image == null)
@@ -140,7 +184,7 @@ internal sealed unsafe partial class MainWindow
     {
         x = y = 0;
         value = default;
-        if (_mouseX < 0 || _mouseY < 0 || _mouseX >= ViewWidth || _mouseY >= ViewHeight) return false;
+        if (_mouseX < ViewX || _mouseY < ViewY || _mouseX >= ViewX + ViewWidth || _mouseY >= ViewY + ViewHeight) return false;
         (double ix, double iy) = ImageToScreen(image, _view).Inverse().Apply(_mouseX + 0.5, _mouseY + 0.5);
         x = (int)Math.Floor(ix);
         y = (int)Math.Floor(iy);
@@ -150,7 +194,7 @@ internal sealed unsafe partial class MainWindow
     void DrawPerfOverlay()
     {
         float scale = (float)_dpiScale;
-        ImGui.SetNextWindowPos(new Vector2(10 * scale, 10 * scale));
+        ImGui.SetNextWindowPos(new Vector2(ViewX + 10 * scale, ViewY + 10 * scale));
         ImGui.SetNextWindowBgAlpha(0.8f);
         if (ImGui.Begin("perf"u8, PinnedWindow | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoInputs))
         {
@@ -192,7 +236,7 @@ internal sealed unsafe partial class MainWindow
     {
         LoadedImage? image = _shown;
         float scale = (float)_dpiScale;
-        ImGui.SetNextWindowPos(new Vector2(_clientWidth - 10 * scale, 10 * scale), ImGuiCond.Always, new Vector2(1, 0));
+        ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth - 10 * scale, ViewY + 10 * scale), ImGuiCond.Always, new Vector2(1, 0));
         ImGui.SetNextWindowBgAlpha(0.9f);
         if (ImGui.Begin("Display"u8, ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize |
             ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoNav))
@@ -245,7 +289,7 @@ internal sealed unsafe partial class MainWindow
     {
         string? text = _shown?.Error ?? (_shown == null && FileCount == 0 ? "Drop images here" : null);
         if (text == null || !Utf8.TryWrite(_utf8, $"{text}", out int n)) return;
-        ImGui.SetNextWindowPos(new Vector2(ViewWidth / 2f, ViewHeight / 2f), ImGuiCond.Always, new Vector2(0.5f, 0.5f));
+        ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth / 2f, ViewY + ViewHeight / 2f), ImGuiCond.Always, new Vector2(0.5f, 0.5f));
         ImGui.SetNextWindowBgAlpha(0.6f);
         if (ImGui.Begin("message"u8, PinnedWindow | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoInputs))
         {

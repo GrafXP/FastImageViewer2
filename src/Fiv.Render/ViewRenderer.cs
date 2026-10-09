@@ -75,6 +75,7 @@ public sealed unsafe class ViewRenderer : IDisposable
         rasterizerDesc.FillMode = D3D11_FILL_MODE.D3D11_FILL_SOLID;
         rasterizerDesc.CullMode = D3D11_CULL_MODE.D3D11_CULL_NONE;
         rasterizerDesc.DepthClipEnable = true;
+        rasterizerDesc.ScissorEnable = true;
         ID3D11RasterizerState* rasterizer;
         Hr.Check(device->CreateRasterizerState(&rasterizerDesc, &rasterizer), "CreateRasterizerState");
         _rasterizer = rasterizer;
@@ -83,10 +84,15 @@ public sealed unsafe class ViewRenderer : IDisposable
     /// <summary>
     /// Draws the image. <paramref name="imageToScreen"/> maps image pixel coordinates to
     /// back-buffer pixel coordinates; <paramref name="zoom"/> is screen pixels per image pixel.
+    /// Nothing is drawn outside the rectangle (<paramref name="clipX"/>, <paramref name="clipY"/>,
+    /// <paramref name="clipWidth"/>, <paramref name="clipHeight"/>), the part of the window the image has.
     /// </summary>
-    public void Draw(GpuImage image, in Affine2 imageToScreen, double zoom, in DisplaySettings display)
+    public void Draw(GpuImage image, in Affine2 imageToScreen, double zoom, in DisplaySettings display,
+        int clipX, int clipY, int clipWidth, int clipHeight)
     {
         ID3D11DeviceContext* context = _gpu.Context;
+        var clip = new Windows.Win32.Foundation.RECT { left = clipX, top = clipY, right = clipX + clipWidth, bottom = clipY + clipHeight };
+        context->RSSetScissorRects(1, &clip);
         double sx = 2.0 / _gpu.Width, sy = 2.0 / _gpu.Height;
         Affine2 m = imageToScreen;
 

@@ -28,6 +28,19 @@ internal sealed class Options
     public int CacheMb { get; private set; } = 4096;
     public int VramMb { get; private set; } = 2048;
 
+    /// <summary>
+    /// Where settings, the panel layout and the thumbnail cache are kept. Default:
+    /// %LOCALAPPDATA%\FastImageViewer2. Tests and benchmarks point it elsewhere to leave the user's alone.
+    /// </summary>
+    public string ProfileDir { get; private set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FastImageViewer2");
+
+    public string ThumbsDir => Path.Combine(ProfileDir, "thumbs");
+
+    /// <summary>Start with the folder panel / the filmstrip open, whatever the settings say (tests).</summary>
+    public bool ShowBrowser { get; private set; }
+    public bool ShowFilmstrip { get; private set; }
+
     /// <summary>Load only the image asked for, not its neighbours (benchmark runs).</summary>
     public bool NoPrefetch { get; private set; }
 
@@ -48,6 +61,9 @@ internal sealed class Options
                 case "--perf-log" when i + 1 < args.Length: options.PerfLog = args[++i]; break;
                 case "--instance" when i + 1 < args.Length: options.Instance = args[++i]; break;
                 case "--no-prefetch": options.NoPrefetch = true; break;
+                case "--browser": options.ShowBrowser = true; break;
+                case "--filmstrip": options.ShowFilmstrip = true; break;
+                case "--profile" when i + 1 < args.Length: options.ProfileDir = Path.GetFullPath(args[++i]); break;
                 case "--cache-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int cacheMb): options.CacheMb = Math.Max(0, cacheMb); i++; break;
                 case "--vram-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int vramMb): options.VramMb = Math.Max(0, vramMb); i++; break;
                 case "--delay-gpu" when i + 1 < args.Length && int.TryParse(args[i + 1], out int delay): options.DelayGpuMs = delay; i++; break;

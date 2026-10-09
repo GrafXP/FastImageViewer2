@@ -16,12 +16,26 @@ internal sealed unsafe class Ui : IDisposable
 {
     readonly ImGuiContextPtr _context;
 
-    public Ui(GraphicsDevice gpu, double dpiScale)
+    /// <summary>True if a panel layout from an earlier run was found; otherwise the window builds the default one.</summary>
+    public bool HasSavedLayout { get; }
+
+    public Ui(GraphicsDevice gpu, double dpiScale, string layoutFile)
     {
         _context = ImGui.CreateContext();
         ImGui.SetCurrentContext(_context);
         ImGuiIOPtr io = ImGui.GetIO();
-        io.IniFilename = null; // window positions are set by the app each frame; nothing to persist
+        io.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
+        // ImGui keeps where the panels are docked in this file. It holds on to the pointer, so the string is never freed.
+        HasSavedLayout = File.Exists(layoutFile);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(layoutFile)!);
+            io.IniFilename = (byte*)System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(layoutFile);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            io.IniFilename = null; // the layout just is not remembered
+        }
         io.LogFilename = null;
 
         string font = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "segoeui.ttf");

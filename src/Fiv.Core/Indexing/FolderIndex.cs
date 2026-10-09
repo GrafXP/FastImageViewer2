@@ -49,6 +49,9 @@ public enum FolderSort
     Modified,
     Size,
     Type,
+
+    /// <summary>By pixel count. Images whose dimensions are not known yet sort as if they had none.</summary>
+    Dimensions,
 }
 
 /// <summary>Decides from a file name whether a file belongs to a filtered view.</summary>
@@ -81,6 +84,9 @@ public sealed class FolderIndex
         EnumerateMs = enumerateMs;
         SortMs = sortMs;
     }
+
+    /// <summary>The listing's index of the file at a position: the same for a file in every view of the listing.</summary>
+    public int ListingIndexAt(int position) => _order[position];
 
     public ReadOnlySpan<char> NameAt(int position) => Listing.Name(_order[position]);
     public string PathAt(int position) => Path.Join(Directory, NameAt(position));
@@ -130,6 +136,7 @@ public sealed class FolderIndex
             FolderSort.Modified => (x, y) => listing.ModifiedFileTime(x).CompareTo(listing.ModifiedFileTime(y)) is var c and not 0 ? c : byName(x, y),
             FolderSort.Size => (x, y) => listing.Size(x).CompareTo(listing.Size(y)) is var c and not 0 ? c : byName(x, y),
             FolderSort.Type => (x, y) => Extension(listing.Name(x)).CompareTo(Extension(listing.Name(y)), StringComparison.OrdinalIgnoreCase) is var c and not 0 ? c : byName(x, y),
+            FolderSort.Dimensions => (x, y) => listing.PixelCount(x).CompareTo(listing.PixelCount(y)) is var c and not 0 ? c : byName(x, y),
             _ => byName,
         };
         ParallelSort(order, descending ? (x, y) => compare(y, x) : compare);
