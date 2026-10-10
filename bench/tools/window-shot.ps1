@@ -6,9 +6,9 @@
 #       "keyup:0x70"          WM_KEYUP with that virtual key (for keys that act differently when held)
 #       "press:0x4D[:sc]"     a key the viewer acts on, with Shift ("s") and Ctrl ("c") as stated and not as the real keyboard has them
 #       "release:0x4D"        that key released
-#       "wheel:120:800:450"   WM_MOUSEWHEEL delta at client x,y
+#       "wheel:120:800:450[:sc]"  WM_MOUSEWHEEL delta at client x,y, with Shift ("s") and Ctrl ("c") if stated
 #       "drag:x0:y0:x1:y1"    left-button drag in client coordinates
-#       "dragc:x0:y0:x1:y1"   the same, but working wherever the real mouse is (see "hover")
+#       "dragc:x0:y0:x1:y1[:s]"  the same, but working wherever the real mouse is (see "hover"); with "s": Shift held
 #       "move:x:y"            mouse move in client coordinates
 #       "hover:x:y"           tell the viewer the mouse rests there (a mouse move is followed by "mouse left" when the real mouse is elsewhere)
 #       "dbl:x:y"             double click
@@ -67,8 +67,9 @@ try {
             'dragc' {
                 # a left-button drag in client coordinates, through WM_APP_TEST_MOUSE, in a few steps
                 $x0 = [int]$a[1]; $y0 = [int]$a[2]; $x1 = [int]$a[3]; $y1 = [int]$a[4]
+                $down = 1; if ($a.Count -gt 5 -and $a[5] -match 's') { $down = 5 }   # 4 added: the button goes down with Shift held
                 [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L($x0, $y0)); Start-Sleep -Milliseconds 80
-                [void][W]::PostMessageW($h, 0x8016, [IntPtr]1, [W]::L($x0, $y0)); Start-Sleep -Milliseconds 80
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]$down, [W]::L($x0, $y0)); Start-Sleep -Milliseconds 80
                 foreach ($i in 1..4) {
                     [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L([int]($x0 + ($x1 - $x0) * $i / 4), [int]($y0 + ($y1 - $y0) * $i / 4))); Start-Sleep -Milliseconds 40
                 }
@@ -98,7 +99,10 @@ try {
             }
             'wheel' {
                 $pt = New-Object W+POINT; $pt.X = [int]$a[2]; $pt.Y = [int]$a[3]; [void][W]::ClientToScreen($h, [ref]$pt)
-                [void][W]::PostMessageW($h, 0x020A, [IntPtr]([int]$a[1] -shl 16), [W]::L($pt.X, $pt.Y))
+                # the low word of wParam says which keys are held: MK_SHIFT 4, MK_CONTROL 8
+                $mods = if ($a.Count -gt 4) { $a[4] } else { '' }
+                $keys = 0; if ($mods -match 's') { $keys = $keys -bor 4 }; if ($mods -match 'c') { $keys = $keys -bor 8 }
+                [void][W]::PostMessageW($h, 0x020A, [IntPtr]((([int]$a[1]) -shl 16) -bor $keys), [W]::L($pt.X, $pt.Y))
             }
             'drag' {
                 [void][W]::PostMessageW($h, 0x0201, [IntPtr]1, [W]::L([int]$a[1], [int]$a[2]))

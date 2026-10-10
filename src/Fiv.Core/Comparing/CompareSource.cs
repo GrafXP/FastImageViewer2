@@ -20,8 +20,9 @@ public readonly record struct CanvasRect(int X, int Y, int Width, int Height)
 /// One image of a compared pair as the numbers see it: its full-resolution pixels and where they
 /// lie on the canvas. Rows are read in canvas coordinates as R, G, B, A floats, whatever the
 /// layout and orientation of the stored image. Where the placement moves whole pixels (top-left,
-/// centred, any orientation) every canvas pixel is exactly one stored pixel; where it scales,
-/// the four nearest stored pixels are blended, as on screen.
+/// centred, any orientation, an alignment by whole pixels) every canvas pixel is exactly one
+/// stored pixel; where it scales, turns or moves by a fraction of a pixel, the four nearest
+/// stored pixels are blended, as on screen.
 /// </summary>
 public sealed unsafe class CompareSource
 {
@@ -30,11 +31,18 @@ public sealed unsafe class CompareSource
     /// <summary>Stored pixel coordinates to canvas coordinates.</summary>
     public Affine2 ToCanvas { get; }
 
-    /// <summary>The canvas pixels whose centres the image covers.</summary>
+    /// <summary>
+    /// The smallest rectangle of canvas pixels that holds every pixel whose centre the image
+    /// covers. An image that is not turned covers all of it; of a turned one, <see cref="RowSpan"/>
+    /// says which pixels of a row it covers.
+    /// </summary>
     public CanvasRect Bounds { get; }
 
     /// <summary>True if every canvas pixel is exactly one stored pixel.</summary>
     public bool PixelAligned { get; }
+
+    /// <summary>True if the image's edges run along the rows and columns of the canvas, so that it covers the whole of <see cref="Bounds"/>.</summary>
+    public bool Upright { get; }
 
     public bool IsColor => Image.Layout is PixelLayout.Bgra8 or PixelLayout.Rgba16;
 
@@ -64,25 +72,77 @@ public sealed unsafe class CompareSource
         ToCanvas = storedToCanvas;
         _toStored = storedToCanvas.Inverse();
 
-        (double x0, double y0) = storedToCanvas.Apply(0, 0);
-        (double x1, double y1) = storedToCanvas.Apply(image.Width, image.Height);
+        double left = double.MaxValue, top = double.MaxValue, right = double.MinValue, bottom = double.MinValue;
+        for (int corner = 0; corner < 4; corner++)
+        {
+            (double x, double y) = storedToCanvas.Apply((corner & 1) * image.Width, (corner >> 1) * image.Height);
+            left = Math.Min(left, x);
+            right = Math.Max(right, x);
+            top = Math.Min(top, y);
+            bottom = Math.Max(bottom, y);
+        }
         // A pixel belongs to the image if its centre is inside.
-        Bounds = CanvasRect.FromEdges(
-            (int)Math.Ceiling(Math.Min(x0, x1) - 0.5), (int)Math.Ceiling(Math.Min(y0, y1) - 0.5),
-            (int)Math.Ceiling(Math.Max(x0, x1) - 0.5), (int)Math.Ceiling(Math.Max(y0, y1) - 0.5));
+        Bounds = CanvasRect.FromEdges(Whole(Math.Ceiling(left - 0.5)), Whole(Math.Ceiling(top - 0.5)), Whole(Math.Ceiling(right - 0.5)), Whole(Math.Ceiling(bottom - 0.5)));
 
         Affine2 m = _toStored;
         PixelAligned = IsUnit(m.A) && IsUnit(m.B) && IsUnit(m.C) && IsUnit(m.D) && IsWhole(m.Tx) && IsWhole(m.Ty);
+        Upright = (Math.Abs(m.B) < 1e-12 && Math.Abs(m.C) < 1e-12) || (Math.Abs(m.A) < 1e-12 && Math.Abs(m.D) < 1e-12);
 
         static bool IsUnit(double v) => Math.Abs(v) < 1e-9 || Math.Abs(Math.Abs(v) - 1) < 1e-9;
         static bool IsWhole(double v) => Math.Abs(v - Math.Round(v)) < 1e-6;
     }
 
+    static int Whole(double value) => (int)Math.Clamp(value, -1e9, 1e9);
+
+    /// <summary>
+    /// The canvas pixels of row <paramref name="y"/> whose centres the image covers: from
+    /// <paramref name="left"/> up to, not including, <paramref name="right"/>. None if the two
+    /// are equal. An image is a convex shape on the canvas, so there is one such run per row.
+    /// </summary>
+    public void RowSpan(int y, out int left, out int right)
+    {
+        left = Bounds.X;
+        right = Bounds.Right;
+        if (y < Bounds.Y || y >= Bounds.Bottom)
+        {
+            right = left;
+            return;
+        }
+        if (Upright) return;
+        // Along the row, the stored position of pixel x's centre is start + x * step: inside the image while neither coordinate leaves it.
+        (double startX, double startY) = _toStored.Apply(0.5, y + 0.5);
+        Clip(startX, _toStored.A, Image.Width, ref left, ref right);
+        Clip(startY, _toStored.B, Image.Height, ref left, ref right);
+        if (right < left) right = left;
+    }
+
+    /// <summary>Narrows left .. right to the x for which 0 &lt;= start + x * step &lt; size.</summary>
+    static void Clip(double start, double step, double size, ref int left, ref int right)
+    {
+        if (Math.Abs(step) < 1e-12)
+        {
+            if (!(start >= 0 && start < size)) right = left;
+            return;
+        }
+        double atZero = -start / step, atSize = (size - start) / step;
+        if (step > 0)
+        {
+            left = Math.Max(left, Whole(Math.Ceiling(atZero)));
+            right = Math.Min(right, Whole(Math.Ceiling(atSize)));
+        }
+        else
+        {
+            left = Math.Max(left, Whole(Math.Floor(atSize)) + 1);
+            right = Math.Min(right, Whole(Math.Floor(atZero)) + 1);
+        }
+    }
+
     /// <summary>
     /// Reads <paramref name="count"/> pixels of canvas row <paramref name="y"/>, starting at
-    /// <paramref name="x"/>, all of which must lie in <see cref="Bounds"/>. Each stored sample is
-    /// multiplied by <paramref name="scale"/>. A grayscale image gives its value as red, green
-    /// and blue and is opaque.
+    /// <paramref name="x"/>. Each stored sample is multiplied by <paramref name="scale"/>. A
+    /// grayscale image gives its value as red, green and blue and is opaque. The pixels of a
+    /// pixel-aligned image must all lie in <see cref="Bounds"/>; of any other, a pixel the image
+    /// does not cover (see <see cref="RowSpan"/>) reads as the image's nearest edge.
     /// </summary>
     public void ReadRow(int y, int x, int count, float* r, float* g, float* b, float* a, float scale)
     {
@@ -161,11 +221,18 @@ public sealed unsafe class CompareSource
             Fetch(x1, y0, c10);
             Fetch(x0, y1, c01);
             Fetch(x1, y1, c11);
-            float w00 = (1 - tx) * (1 - ty) * scale, w10 = tx * (1 - ty) * scale, w01 = (1 - tx) * ty * scale, w11 = tx * ty * scale;
-            r[i] = c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11;
-            g[i] = c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11;
-            b[i] = c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11;
-            a[i] = c00[3] * w00 + c10[3] * w10 + c01[3] * w01 + c11[3] * w11;
+            r[i] = Blend(c00[0], c10[0], c01[0], c11[0], tx, ty) * scale;
+            g[i] = Blend(c00[1], c10[1], c01[1], c11[1], tx, ty) * scale;
+            b[i] = Blend(c00[2], c10[2], c01[2], c11[2], tx, ty) * scale;
+            a[i] = Blend(c00[3], c10[3], c01[3], c11[3], tx, ty) * scale;
+        }
+
+        // From one value towards the next by a fraction: four equal values give exactly that value,
+        // which four weights that only nearly add up to one would not (an opaque image has to stay opaque).
+        static float Blend(float v00, float v10, float v01, float v11, float tx, float ty)
+        {
+            float upper = v00 + (v10 - v00) * tx, lower = v01 + (v11 - v01) * tx;
+            return upper + (lower - upper) * ty;
         }
     }
 

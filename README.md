@@ -45,6 +45,15 @@ are computed from the full-resolution pixels as the files have them, not from th
 in far enough, the values of both images and their difference are written into each pixel. The
 view at full resolution, the difference values and the numbers can be saved.
 
+Images that do not lie on each other can be aligned: the second image of the pair is moved,
+turned and scaled until it lies on the first. By hand, with `A`: drag it, turn it with a drag
+and `Shift` held, nudge it with the arrow keys, or type the numbers. Automatically, with `Shift+A`, from the pictures themselves (a
+24 MP pair in about a quarter of a second, to a few hundredths of a pixel); `Q` refines a pose
+set by hand. Both can be told to go by a region only: a rectangle dragged on the image, for
+when part of the picture has changed or moved on its own. Everything follows the alignment: the panes, the difference and the other
+two-image views, the pixel readouts, the numbers and the saved files. The aligned image itself
+can be saved, on the pixel grid of the image it was aligned to.
+
 | Input | Action |
 |---|---|
 | `Right` / `Space` / `PgDn`, `Left` / `Backspace` / `PgUp` | next, previous image |
@@ -99,6 +108,22 @@ Comparing:
 | `Ctrl+D` | save the difference itself, second image less first, as 32-bit float TIFF |
 | `Ctrl+Shift+S` | save the numbers as CSV or JSON |
 
+Aligning the second image of the pair to the first:
+
+| Input | Action |
+|---|---|
+| `A` | align mode: a panel with the image's position, turn and size as numbers, how alike the two images are as they lie, reset and undo; drags and the keys below move the image instead of the view |
+| `Shift+A` | align automatically: moved only, moved and turned, or moved, turned and scaled, as chosen in the panel. A result that does not make the two more alike is not taken over |
+| `Q` | fine align: refine the pose the image has (set by hand to within about a twentieth of the image) |
+| Drag, arrow keys | move the image; the keys by 1 pixel, with `Shift` by 0.1 |
+| `Shift`+drag | turn the image about its centre, by the angle the mouse goes round it: grab it far from the centre to turn finely |
+| `PgUp` / `PgDn`, `Shift`+wheel | turn it by 0.1 degrees; the keys with `Shift`, the wheel with `Ctrl` as well: by 0.01 |
+| `Home` / `End`, `Ctrl`+wheel | make it smaller / larger by 0.1 % (the keys with `Shift`: 0.01 %) |
+| "Region..." in the panel, then a drag | a rectangle for the automatic alignment to go by, instead of the whole of both images; "Whole image" takes it away |
+| `Backspace` | back to where it was before any aligning |
+| `Ctrl+E` | save the aligned image: PNG, or 32-bit float TIFF for float images; transparent where it has no pixel |
+| `A` or `Esc` | leave align mode; the image stays where it was put |
+
 The status bar shows position in the folder, file, size, zoom, and the coordinates and stored
 values of the pixel under the cursor (16-bit and float values as they are in the file).
 
@@ -115,7 +140,7 @@ comparison in that mode instead of the one used last.
 ```powershell
 dotnet build bench\Fiv.Bench -c Release
 $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
-& $bench corpus      # generate the test images into corpus\ (220 files, about 0.9 GB, half a minute)
+& $bench corpus      # generate the test images into corpus\ (221 files, about 0.9 GB, half a minute)
 & $bench open        # cold start of the viewer, stage by stage
 & $bench reopen      # open with the viewer already running
 & $bench navigate    # next/previous in a folder: single steps, and the arrow key held
@@ -123,6 +148,7 @@ $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
 & $bench browse      # folder panel: first screen of thumbnails, new and seen before
 & $bench compare     # compare modes: loading a set, zoom and pan in each mode, switching
 & $bench metrics     # comparing on the CPU: error metrics, structural similarity, saving the views
+& $bench align       # aligning two images: time, and how close to known moves, turns and scalings
 & $bench decode      # decoder timings
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)
 ```

@@ -41,6 +41,7 @@ internal static unsafe class Ssim
         public readonly double[] Product = new double[InputColumns];
         public readonly double[] Column = new double[5 * TileColumns];
         public readonly double[] Totals = new double[planes];
+        public long Positions;
     }
 
     /// <summary>
@@ -50,6 +51,10 @@ internal static unsafe class Ssim
     /// into it, the border the window cannot reach taking the nearest value;
     /// <paramref name="mapOnly"/> then leaves the other planes out. Null if the area is too
     /// small or the work was cancelled.
+    ///
+    /// Where one of the images is turned, the two do not cover the whole area. The mean is then
+    /// over the positions whose whole window both cover, and the map says 1, "the same", where
+    /// they do not both have a pixel.
     /// </summary>
     public static double[]? Compute(CompareSource first, CompareSource second, CanvasRect area, float scaleFirst, float scaleSecond, bool colour,
         double peak, DecodedImage? map, CancellationToken cancel, bool mapOnly = false)
@@ -60,6 +65,8 @@ internal static unsafe class Ssim
         double c1 = 0.01 * peak * (0.01 * peak), c2 = 0.03 * peak * (0.03 * peak);
         double wr = DifferenceMath.LumaWeights.X, wg = DifferenceMath.LumaWeights.Y, wb = DifferenceMath.LumaWeights.Z;
         var totals = new double[planes];
+        long positions = 0;
+        bool masked = !first.Upright || !second.Upright;
         int tileRows = (outHeight + TileRows - 1) / TileRows, tileColumns = (outWidth + TileColumns - 1) / TileColumns;
 
         Parallel.For(0, tileRows * tileColumns, () => new Work(planes), (tile, state, work) =>
@@ -125,7 +132,21 @@ internal static unsafe class Ssim
                         float* mapRow = map != null && p == mapPlane
                             ? (float*)(map.Pixels + (long)(firstRow + o + Radius) * map.Stride) + firstColumn + Radius
                             : null;
-                        sum += SimilarityRow(column, columns, c1, c2, mapRow);
+                        if (!masked)
+                        {
+                            sum += SimilarityRow(column, columns, 0, columns, c1, c2, mapRow);
+                            continue;
+                        }
+                        if (mapRow != null) SimilarityRow(column, columns, 0, columns, c1, c2, mapRow);
+                        // What both images cover is convex: a window lies inside it if its top and its bottom row do.
+                        int centre = area.Y + firstRow + o + Radius, origin = area.X + firstColumn;
+                        CompareMetrics.CommonSpan(first, second, centre - Radius, area, out int leftAbove, out int countAbove);
+                        CompareMetrics.CommonSpan(first, second, centre + Radius, area, out int leftBelow, out int countBelow);
+                        int from = Math.Max(0, Math.Max(leftAbove, leftBelow) - origin);
+                        int to = Math.Min(columns, Math.Min(leftAbove + countAbove, leftBelow + countBelow) - origin - 2 * Radius);
+                        if (to <= from) continue;
+                        sum += SimilarityRow(column, columns, from, to, c1, c2, null);
+                        if (p == mapPlane) work.Positions += to - from;
                     }
                     work.Totals[p] += sum;
                 }
@@ -134,13 +155,37 @@ internal static unsafe class Ssim
         }, work =>
         {
             lock (totals)
+            {
                 for (int p = 0; p < planes; p++) totals[p] += work.Totals[p];
+                positions += work.Positions;
+            }
         });
         if (cancel.IsCancellationRequested) return null;
-        if (map != null) FillBorder(map);
-        double count = (double)outWidth * outHeight;
+        if (map != null)
+        {
+            FillBorder(map);
+            if (masked) ClearUncovered(map, first, second, area);
+        }
+        double count = masked ? positions : (double)outWidth * outHeight;
+        if (!(count > 0)) return null;
         for (int p = 0; p < planes; p++) totals[p] /= count;
         return totals;
+    }
+
+    /// <summary>Where the two images do not both have a pixel, the map says "the same".</summary>
+    static void ClearUncovered(DecodedImage map, CompareSource first, CompareSource second, CanvasRect area)
+    {
+        Parallel.For(0, map.Height, y =>
+        {
+            var row = new Span<float>(map.Pixels + (long)y * map.Stride, map.Width);
+            if (!CompareMetrics.CommonSpan(first, second, area.Y + y, area, out int left, out int count))
+            {
+                row.Fill(1f);
+                return;
+            }
+            row[..(left - area.X)].Fill(1f);
+            row[(left - area.X + count)..].Fill(1f);
+        });
     }
 
     /// <summary>output[x] = the kernel over input[x .. x + 10].</summary>
@@ -193,16 +238,17 @@ internal static unsafe class Ssim
     }
 
     /// <summary>
-    /// The similarity of one row of pixels from the five local means (of a, b, a*a, b*b, a*b,
-    /// each <paramref name="count"/> long, one after the other). Returns their sum.
+    /// The similarity of the pixels <paramref name="from"/> up to <paramref name="to"/> of one row
+    /// from the five local means (of a, b, a*a, b*b, a*b, each <paramref name="count"/> long, one
+    /// after the other). Returns their sum.
     /// </summary>
-    static double SimilarityRow(double* means, int count, double c1, double c2, float* map)
+    static double SimilarityRow(double* means, int count, int from, int to, double c1, double c2, float* map)
     {
         double* meanA = means, meanB = means + count, meanAA = means + 2 * count, meanBB = means + 3 * count, meanAB = means + 4 * count;
-        int x = 0, step = Vector<double>.Count;
+        int x = from, step = Vector<double>.Count;
         Vector<double> total = Vector<double>.Zero, vc1 = new(c1), vc2 = new(c2), two = new(2.0);
         double* values = stackalloc double[step];
-        for (; x <= count - step; x += step)
+        for (; x <= to - step; x += step)
         {
             Vector<double> a = Vector.Load(meanA + x), b = Vector.Load(meanB + x);
             Vector<double> aa = a * a, bb = b * b, ab = a * b;
@@ -216,7 +262,7 @@ internal static unsafe class Ssim
             }
         }
         double sum = Vector.Sum(total);
-        for (; x < count; x++)
+        for (; x < to; x++)
         {
             double a = meanA[x], b = meanB[x];
             double aa = a * a, bb = b * b, ab = a * b;

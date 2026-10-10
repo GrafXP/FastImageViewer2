@@ -50,6 +50,9 @@ public sealed class Settings
     public float DifferenceThreshold = 2f / 255;
     public bool DifferenceMask, ShowMetrics, PixelValues;
 
+    /// <summary>What the automatic alignment may do to an image: move it, turn it, scale it.</summary>
+    public AlignModel AlignModel = AlignModel.ShiftRotationScale;
+
     /// <summary>Moves an entry to the front of a recent list, case-insensitively, and trims the list.</summary>
     public static void Remember(List<string> list, string path)
     {
@@ -123,6 +126,7 @@ public sealed class Settings
                     case "differenceMask": settings.DifferenceMask = reader.GetBoolean(); break;
                     case "showMetrics": settings.ShowMetrics = reader.GetBoolean(); break;
                     case "pixelValues": settings.PixelValues = reader.GetBoolean(); break;
+                    case "alignModel": settings.AlignModel = Enum.TryParse(reader.GetString(), true, out AlignModel model) && Enum.IsDefined(model) ? model : AlignModel.ShiftRotationScale; break;
                     default: reader.Skip(); break; // a setting of a newer version: leave it
                 }
             }
@@ -204,6 +208,7 @@ public sealed class Settings
                 writer.WriteBoolean("differenceMask", DifferenceMask);
                 writer.WriteBoolean("showMetrics", ShowMetrics);
                 writer.WriteBoolean("pixelValues", PixelValues);
+                writer.WriteString("alignModel", AlignModel.ToString());
                 writer.WriteEndObject();
             }
             // Written whole or not at all: to a temporary file first, then renamed over the old one.

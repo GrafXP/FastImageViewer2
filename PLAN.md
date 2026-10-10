@@ -1,8 +1,8 @@
 # FastImageViewer2 — Plan
 
-Status: **M0, M1 and M2 done and measured; M3, M4 and M5 built and measured, each with untested items** (see section 9); **M6 is next.** What each milestone left open is listed
+Status: **M0, M1 and M2 done and measured; M3, M4, M5 and M6 built and measured, each with untested items** (see section 9); **M7 is next.** What each milestone left open is listed
 under it in section 9. Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
-Measured numbers: section 2.1 (M0), 2.2 (M1), 2.3 (M2), 2.4 (M4, comparing) and 2.5 (M5, difference and metrics). Build and keys: `README.md`.
+Measured numbers: section 2.1 (M0), 2.2 (M1), 2.3 (M2), 2.4 (M4, comparing), 2.5 (M5, difference and metrics) and 2.6 (M6, aligning). Build and keys: `README.md`.
 
 FastImageViewer2 is a new image viewer for Windows. It takes its feature ideas from
 FastImageViewer (`../FastImageViewer`) but shares no code and no technology with it.
@@ -320,6 +320,81 @@ Regression run of the earlier budgets: cold start 95 ms to first pixels, 278 ms 
 39 of 39 images at 30 per second with the arrow key held; switching between compared images
 1.3 ms to `Present`: unchanged.
 
+### 2.6 Measured in M6: aligning
+
+Same machine and corpus; the machine was in use. Reproduce with `fivbench align` (the
+registration alone) and `fivbench compare` (the viewer).
+
+**The registration**, on all 12 logical cores, median of 7. The reference is
+`scene_1_original.jpg`, 24 MP. The moved images of the first six rows were made from it in
+memory, by blending four pixels, so that the pose that lays them back on it is known exactly;
+`scene_5_moved.jpg` was made the same way and then compressed. "Off by" is how far the pose
+found puts the corners of the image from where the true pose puts them.
+
+| Moved image | Reduced sizes of both images | Aligning | Pose found | Off by | Alike before → after |
+|---|---|---|---|---|---|
+| moved by 37 and -21 pixels | 22 ms | 199 ms | x 37, y -21 | 0.000 px | 0.8660 → 0.9986 |
+| the same, only moving allowed | 21 ms | 154 ms | x 37, y -21 | 0.000 px | 0.8660 → 0.9986 |
+| moved by 12.3 and -7.6 pixels | 21 ms | 190 ms | x 12.299, y -7.599 | 0.001 px | 0.9575 → 0.9992 |
+| moved, turned by 0.31° | 22 ms | 202 ms | x -18.398, y 9.7, 0.31° | 0.002 px | 0.9364 → 0.9992 |
+| moved, turned by -2.5°, 2 % larger | 21 ms | 164 ms | x 64.199, y 31.501, -2.5°, 102 % | 0.002 px | 0.6376 → 0.9991 |
+| moved, turned by 25°, 10 % smaller | 22 ms | 135 ms | x -119.999, y 80.001, 25°, 90 % | 0.001 px | 0.1146 → 0.9995 |
+| `scene_5_moved.jpg`: x 23.6, y -14.2, 0.75°, 100.4 % | 22 ms | 194 ms | x 23.599, y -14.2, 0.75°, 100.4 % | 0.003 px | 0.8750 → 0.9991 |
+| the same, refined from x 20, y -10, 0.6° | 23 ms | 157 ms | x 23.599, y -14.2, 0.75°, 100.4 % | 0.003 px | 0.9601 → 0.9991 |
+| the same, by a region of 1500 x 1000 pixels in the middle | 32 ms | 168 ms | x 23.598, y -14.2, 0.7499°, 100.4005 % | 0.008 px in the region | 0.9291 → 0.9997 there |
+| the same, refined by a region of 400 x 300 pixels, moving and turning only | 27 ms | 25 ms | x 23.582, y -14.25, 0.7486° | 0.007 px in the region | 0.7778 → 0.9935 there |
+| `scene_2_quality50.jpg`: nothing to align | 22 ms | 191 ms | nothing | 0.000 px | 0.9999 → 0.9999 |
+| `scene_4_half.jpg`, scaled to fit: nothing to align | 13 ms | 188 ms | x -0.075, y -0.067 | 0.101 px | 1.0000 → 1.0000 |
+
+The turn came out right to the fourth decimal of a degree in every row but the two that went
+by a region. Those two are from a later run, in which the other rows took 170 to 250 ms; "off
+by" is there taken at the corners of the region, which is where the alignment looked. Outside
+it the pose is only as good as the region is large: the turn found from 400 x 300 pixels is
+off by 0.0014°, which is 0.09 pixels at the far corner of the image. Two other runs on the
+same day gave the same poses and 130 to 275 ms, depending on what else the machine was doing. How alike two 24 MP images are at a given pose, which is what the align
+panel shows after every change: 1.3 ms, longest 2.1 ms. The Fourier transform under all of
+it, on one core: 1.0 ms for 256 x 256 samples, 4.8 ms for 512 x 512.
+
+Two rows need a word. The recompressed image is found 0.04 and 0.06 pixels from "nothing" and
+then taken to be nothing by the rule for whole pixels (section 9, M6); the half-size image is
+found 0.1 pixels off and left so. Both are properties of this corpus, not of the method, as far
+as could be told: every patch of the image measures about the same small shift (mean 0.034 and
+0.047 pixels over 35 patches, spread 0.04 to 0.07), with the files' own luma as with Rec. 709's;
+the image that differs from the original by brightness and one square, at the same quality,
+measures 0.0000; and an exact picture with noise, compressed at quality 95 and at 50 by the
+same encoder, comes out within 0.03 pixels of nothing. The corpus scene builds its fine detail on grids of 2,
+4 and 8 pixels that start where JPEG's blocks start, which is the likely reason coarser
+quantisation moves that detail a little: an explanation, not something that was proved.
+
+**In the viewer**, from `Shift+A` to the image in its new place, with the reduced sizes made on
+the way: 174 to 266 ms over eight runs on 24 MP pairs (8-bit JPEGs, and a 16-bit PNG against a
+float TIFF); `Q`, with the reduced sizes already there: 130 and 165 ms. The numbers of the
+aligned pair (23.9 of 24 million pixels, one image blended): 577 ms for the errors and 618 ms
+for the structural similarity with its map, against 284 and 496 ms for the same pair not
+aligned, measured in the same run.
+
+**Nothing else got slower.** The M5 build and this one were run back to back, because the
+machine was busier than when 2.4 and 2.5 were measured and both builds came out slower than
+those sections say (sets loaded in 340 to 770 ms, a few of the 295 refreshes missed in some
+modes). Between the two builds there is no difference beyond the scatter of the runs:
+
+| | M5 build | this build |
+|---|---|---|
+| Zoom and pan, the eight modes of 2.4: CPU per frame, mean | 0.19–0.38 ms | 0.18–0.31 ms |
+| Difference view / with values written into the pixels | 0.25 / 1.21 ms | 0.22 / 0.91 ms |
+| The same, longest frame | 0.56 / 5.1 ms | 3.6 / 4.5 ms |
+| Similarity view | 0.25 ms | 0.20 ms |
+| Switching between compared images, median / p90 | 1.1 / 1.5 ms | 1.0 / 1.1 ms |
+| Error numbers of a 24 MP pair (`fivbench metrics`; two runs, five runs) | 179, 185 ms | 180–207 ms |
+| With structural similarity | 754, 766 ms | 743–792 ms |
+
+The values written into the pixels stay over the 2 ms budget in their longest frame, as in 2.5.
+
+**Against the exit criteria of M6:** see section 9. The synthetic tests are unit tests on
+exact pictures of 640 x 480 (blobs of all sizes, defined at every point, so that nothing is
+resampled to make the moved picture): ten poses, corners off by 0.000 to 0.015 pixels, turn by
+0 to 0.0012°.
+
 ## 3. Technology
 
 ### 3.1 Language: C#, C++, Rust or Go?
@@ -550,6 +625,59 @@ mipmapped filtering when zoomed out, optional bicubic.
   filtered down to the screen before the two are subtracted, so differences of single pixels
   fade when many pixels share one screen pixel. At 100 % and above it is exact.
 
+**As built in M6:**
+
+- **A pose per image.** Every image of a set can be moved, turned and scaled about its centre
+  (`AlignPose`). The pose is the last factor of the image's transform to the canvas, after
+  orientation and placement, and nothing downstream had to learn about alignment: the panes,
+  the two float targets of the combine pass, the linked cursor, the numbers and the saved files
+  all go through the canvas. On screen an aligned image costs what any image costs.
+- **Whole pixels stay whole.** A pose that only moves, by whole pixels, leaves a transform that
+  takes pixels to pixels, and such a pair is compared exactly, as before. Any other pose blends
+  the four nearest pixels, on screen (at 100 % and below) and in the numbers alike.
+- **A turned image does not cover a rectangle.** `CompareSource` gives, row by row, the run of
+  canvas pixels whose centres the image covers: one run, because an image is a convex shape.
+  The error numbers count the pixels both images cover. Structural similarity takes its mean
+  over the positions whose whole window both cover (what both cover is convex too, so a window
+  is inside if its top and its bottom row are) and its map says "the same" elsewhere; the
+  saved views are empty where one image is not.
+- **Automatic alignment works on brightness, from coarse to fine** (`Registration`). Each image
+  gets its brightness at a half, a quarter, an eighth and so on of its size (`LumaPyramid`),
+  which whatever follows samples at the step it works at.
+  A first estimate comes from the two pictures as a whole, at 512 samples across: the
+  magnitudes of their Fourier spectra do not depend on where the pictures lie, and laid out by
+  angle and by the logarithm of the radius a turn and a scaling become two shifts, which phase
+  correlation finds; with those undone, a second phase correlation gives the move. Each
+  picture is faded out towards its own edges, so that its outline does not pass for content.
+  The spectra cannot tell a turn from the same turn plus half a turn, so the move is worked
+  out for both, and for the image as it is: the clearest peak wins.
+  The estimate is then refined at a sixteenth, an eighth, ... of the size up to full size: at
+  each size the shift that is left is measured in up to 6 x 6 patches of up to 256 samples,
+  and the move, turn and scaling that explains those shifts best (least squares, clear peaks
+  counting for more, patches that disagree left out) is taken off, until nothing is left at
+  that size. Patches of the last step are 256 pixels of the full image.
+- **By a region, only what is inside it counts.** The alignment can be given a rectangle of
+  the canvas: the first estimate is then made from what the two images show in it (faded out
+  towards the rectangle's edges, the same fade for both, in place of each image's own), the
+  patches of the refinement lie inside it, and "how alike" is taken over it. The pose found is
+  still one pose for the whole image. What a region can make up for is about a quarter of its
+  own size; what it says about turn and scaling goes with its size too.
+- **Phase correlation with a Gaussian weight over frequency.** The weight leaves out the finest
+  detail (noise, compression, what resampling does) and makes the peak a Gaussian, whose place
+  between samples follows exactly from three of them. The patches' samples lie on whole canvas
+  pixels, so that a reference that lies pixel for pixel on the canvas is read, not
+  interpolated: interpolating both images at different fractions was worth up to 0.02 pixels
+  of error.
+- **The Fourier transform is the project's own** (`Fft2D`): radix 2, along the rows as in the
+  textbook, down the columns with whole rows as elements, which the vector types do eight
+  values at a time. 512 x 512 samples in 5 ms on one core.
+- **A result is taken over only if it does not make the two images less alike.** How alike is
+  the correlation of their brightness where they overlap, at about 640 samples across
+  (`Registration.Score`): cheap enough to follow every change of the pose in the align panel,
+  blind to brightness and contrast, and to anything below a pixel or so. The work runs on a
+  worker with the full-resolution pixels; the reduced sizes are kept per image while it is in
+  the set (32 MB for 24 MP).
+
 ## 8. Feature inventory of FastImageViewer → where it lands
 
 | Old feature | In FastImageViewer2 |
@@ -565,8 +693,8 @@ mipmapped filtering when zoomed out, optional bicubic.
 | Layouts single / 2 columns / 2×2, synced zoom/pan, synced anchor point, filename overlay | M4 |
 | Overlay: per-image opacity; blend modes Normal, Multiply, Screen, Overlay, Difference, False-Color Diff; swap A/B; colour bar | M4 (opacity), M5 (difference, false colour) |
 | False-colour schemes Jet, Thermal, Rainbow, Magenta-Cyan, Red-Blue | M5, plus Viridis, Turbo, Coolwarm |
-| Overlay transform: translate / rotate / scale by slider, number, drag; step sizes 0.1 / 1 / 10 | M6 |
-| Auto-align and fine-align (image registration) | M6, new algorithm |
+| Overlay transform: translate / rotate / scale by slider, number, drag; step sizes 0.1 / 1 / 10 | M6: numbers with step buttons, drag, keys and wheel, in steps of 1 and 0.1; no sliders |
+| Auto-align and fine-align (image registration) | M6, new algorithm (section 7) |
 | Low-resolution "preview mode" for overlays | not needed — full resolution is real-time |
 | Quality metrics (sharpness, contrast, edge %) as overlay and sortable columns; "analyze all" | M8 |
 | Line / circle / rectangle measurements, measurement panel, calibration | M8 |
@@ -885,6 +1013,117 @@ cannot hold; a display of another DPI.
 - Before / after similarity score; export the aligned image.
 - Exit: synthetic tests recover known transforms within 0.1 px and 0.05°; a 24 MP pair aligns in
   under 1 s (target).
+
+*State 2026-10-10: built and measured (section 2.6); both exit criteria met; some paths untested.*
+
+| Exit criterion | Result |
+|---|---|
+| Synthetic tests recover known transforms within 0.1 px and 0.05° | ten known moves, turns (up to 58°) and scalings (0.9 to 1.12) of an exact picture of 640 x 480: the corners of the image off by at most **0.015 px**, the turn by at most **0.0012°**; the same with noise, less contrast and more brightness: 0.08 px. The unit tests assert the limits — met |
+| A 24 MP pair aligns in under 1 s | **0.14–0.20 s** (up to 0.28 s with the machine busy), and 0.02 s once for the reduced sizes of both images; in the viewer 0.13–0.27 s from the key to the image in place — met |
+
+Built: a **pose** for every image of a set: moved by x and y, turned, scaled, about its centre;
+shown in the image's label ("moved x 23.6 y -14.2 0.75° 100.4 %"). What is aligned is the
+second image of the pair on show, to the first. **By hand**, in align mode (`A`): a panel with
+the four numbers to type or step; a drag moves the image instead of the view (by whole pixels
+when zoomed out, by screen pixels when zoomed in), and a drag with Shift turns it about its
+centre, by the angle the mouse goes round that centre, so that what was grabbed stays under the
+mouse and grabbing further out turns more finely; the arrow keys move it by a pixel, `PgUp` /
+`PgDn` turn it by 0.1°, `Home` / `End` scale it by 0.1 %, each a tenth of that with Shift;
+`Shift`+wheel turns, `Ctrl`+wheel scales; `Backspace` resets, a button undoes the last change
+(a drag, a run of nudges, an automatic alignment). **Automatically** (`Shift+A`): the image
+may be moved, moved and turned, or moved, turned and scaled, as chosen; **fine align** (`Q`)
+refines the pose the image has. Both go by everything the two images show, or by a **region**:
+a rectangle dragged on the image after "Region..." in the panel, drawn in green and named; it
+is the alignment's own, apart from the region of the
+numbers, so that one part of a picture can be aligned by and another measured. **How alike**
+the two are as they lie (in the region, if there is one) is in the panel after every change,
+and before and after in what an automatic alignment reports; a result that does not make them
+more alike is not taken over. **The aligned image** is saved on the first
+image's pixels (`Ctrl+E`; on the canvas's, if the first image is itself scaled or turned): PNG
+with the image's own depth (8 or 16 bits, grey or colour), 32-bit float TIFF for float,
+transparent where it has no pixel. The choice of what may be
+changed is kept in `settings.json`.
+Under it: what section 7 lists for M6; 16-bit colour in the PNG writer; 88 new unit tests (the
+pose, the Fourier transform against its definition, phase correlation, the reduced sizes, the
+registration on exact pictures of known pose in five layouts, and by a region on a picture
+whose two halves moved differently, coverage and numbers of moved and turned images, the saved
+aligned image; 325 in all); `fivbench align`; `scene_5_moved.jpg` in `corpus\compare`;
+`window-shot.ps1` turns the wheel with Ctrl and Shift and drags with Shift.
+
+Checked in the running viewer, from pictures of its window: the moved JPEG in the difference
+view before and after `Shift+A` (the pose in its label, and in the log to the third decimal
+what the corpus was made with); the panel; a drag at 100 %; the arrow keys, `PgDn` and `End`
+with and without Shift, the wheel with Ctrl, Shift and both; fine align from the pose set that
+way; reset; the similarity view and the metrics panel of the aligned pair (23,856,807 pixels
+of 6000 x 4000) and its numbers as CSV; the aligned image as PNG (looked at: transparent
+border) and, of a float image, as TIFF; a pair nudged by 3 and 2 pixels going back to exactly
+nothing; a recompressed pair ("nothing to improve"); side by side, where the two readouts
+under the linked cursor agree, and split; a 16-bit PNG against a float TIFF; a set of three,
+the third aligned to the first, and the pair swapped; pixel values at 14,000 %; a region drawn
+after the panel's button, `Shift+A` and `Q` going by it (the pose within 0.005 pixels and
+0.0001° of the one found from the whole image, the report and the score naming the region),
+"Whole image" taking it away again, and the region of the numbers next to it, each in its
+colour; a drag with Shift 600 screen pixels to the right of the image's centre, 60 pixels down
+(turned by 5.70°, clockwise) and half of it back (2.86°); the wheel with Shift, with Ctrl and
+with both, as they are now; a plain drag at 29 % moving the image by whole pixels (83 and -48).
+Found and fixed on the way: the metrics of a pair of which one image is blended showed a row
+for alpha with a difference of 0.00005, because four weights that should add up to one gave an
+opaque pixel an alpha of 254.99998 (in M5's scaled-to-fit pairs too); the corpus's
+recompressed image came out 0.07 pixels off "nothing to align" (below).
+
+**Changed from before, to be confirmed:**
+
+- In align mode the arrow keys, `PgUp` / `PgDn`, `Home` / `End` and `Backspace` are the image's,
+  not the set's and not the mode's (divider, opacity, gain). `1`–`9` still switch images.
+- `A`, `Shift+A` and `Q` are new keys while comparing; `Ctrl+E` saves the aligned image.
+- In align mode a drag with Shift turns the image; it does not draw the region of the numbers,
+  as it does outside align mode. That region is still drawn after `R` or its button in the
+  metrics panel, and the alignment's own after "Region..." in the align panel. (For a few
+  hours a drag with Shift drew the alignment's region; turning the image got the gesture.)
+- Shift is the turn and Ctrl the size on the wheel too: `Shift`+wheel turns, `Ctrl`+wheel
+  scales, the other way round from the first version of this milestone.
+- What the automatic alignment finds within 0.08 pixels (at the corners of the image) of a
+  move by whole pixels with no turn and no scaling is taken to be that move: it is the one pose
+  under which a pair is compared pixel for pixel, and 0.08 is inside the tenth of a pixel the
+  method is held to. A turn or scaling that moves the corners by less than 0.03 pixels is
+  taken to be none.
+- An automatic alignment is taken over unless it makes the two images less alike (by more than
+  0.0005 of the score). It replaces what was set by hand; "undo" brings that back.
+- The numbers of scaled-to-fit pairs can differ from M5's in the last digits: four pixels are
+  now blended by going from one to the next, not by four weights.
+
+**Written but not tested:** typing into the panel's fields and their step buttons; "undo"; the
+three choices of what may be changed, in the viewer (each is unit-tested, "moved only" also
+timed); the entries under "Align" in the menu; a region with the model that only moves, in
+the viewer; the Save dialog; an aligned image of 16-bit
+colour and one with transparency of its own; a drag above 100 %; turning with the mouse close
+to the image's centre, and in side by side; the mouse cursor's shape; aligning in the grid and
+with unlinked panes; `Shift+A` again while one
+is running; an image leaving the set, or being moved, while its alignment is worked out; a
+smaller image placed centred, in the viewer (unit-tested); running out of memory; a display
+of another DPI.
+
+**Not done:**
+
+- Only the second image of the pair is moved, one pair at a time. Aligning every image of a
+  set to one, and two folders pair by pair, is M7.
+- Moving, turning and one scale for both directions: no shear, no perspective, no lens distortion.
+- It goes by brightness alone, and needs the two pictures to overlap for the most part. Fine
+  align finds what is off by up to about a twentieth of the image. Two pictures with little in
+  common, or with little texture, get "no alignment found".
+- The region is one rectangle, not kept between runs: no several regions, no shapes, no parts
+  left out of a region. A small region does not make the alignment keep to moving only: with
+  turn and scaling allowed, what it finds for them is right in the region and less so far from it.
+- Blending four pixels softens: the similarity map of a turned pair shows it as a faint weave.
+  No bicubic or better, neither on screen nor in the saved aligned image.
+- The pixel readouts and the values written into the pixels are of the nearest stored pixel of
+  a moved image, not of the blend the numbers are taken of.
+- The score is taken at reduced size: it does not see an improvement of a fraction of a pixel.
+  The metrics panel does.
+- Poses are not kept between runs, and the saved numbers (CSV, JSON) do not say at what pose
+  they were taken. One step of undo.
+- A grey image saved aligned is 0 where it has no pixel: the PNG writer has no grey with alpha.
+- Not measured: real photographs. The corpus is one synthetic scene.
 
 **M7 — Compare IV: folders and automation**
 - Pair two folders by file name (or by order): table of pairs with metrics, sorted worst-first,

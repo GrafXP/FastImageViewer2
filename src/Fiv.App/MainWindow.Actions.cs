@@ -59,7 +59,7 @@ internal sealed unsafe partial class MainWindow
         ("1 ... 9", "go to that image; held down, only until released"),
         ("Left / Right, Home / End", "previous / next, first / last image of the set"),
         ("X / K", "swap the two images / blink between them"),
-        ("Up / Down", "divider, opacity, cell size, blink rate or gain (with Shift: finer)"),
+        ("Up / Down", "divider, opacity, cell size, blink rate or gain (with Shift: finer); while aligning, see below"),
         ("L", "link zoom and position of the panes, or not"),
         ("P", "compare panel"),
         ("", ""),
@@ -73,6 +73,18 @@ internal sealed unsafe partial class MainWindow
         ("Ctrl+S", "save the two-image view at full resolution (PNG)"),
         ("Ctrl+D", "save the difference values (32-bit float TIFF)"),
         ("Ctrl+Shift+S", "save the numbers (CSV or JSON)"),
+        ("", ""),
+        ("A", "align: a panel, and drags and the keys below move the second image instead of the view"),
+        ("Shift+A", "align the second image to the first automatically"),
+        ("Q", "fine align: refine the pose the image has"),
+        ("While aligning", ""),
+        ("Drag, arrows", "move the image; arrows by 1 pixel, with Shift by 0.1"),
+        ("Shift+drag", "turn it about its centre, as far as the mouse goes round it"),
+        ("PgUp / PgDn, Shift+wheel", "turn it by 0.1 degrees; the keys with Shift, the wheel with Ctrl as well: by 0.01"),
+        ("Home / End, Ctrl+wheel", "make it smaller / larger by 0.1 %, the keys with Shift by 0.01 %"),
+        ("Region... in the panel", "then a drag: a rectangle for the automatic alignment to go by"),
+        ("Backspace", "back to where it was before any aligning"),
+        ("Ctrl+E", "save the aligned image (PNG, or TIFF for float)"),
     ];
 
     // ---------------------------------------------------------------- what the actions work on
@@ -303,6 +315,17 @@ internal sealed unsafe partial class MainWindow
         if (ImGui.MenuItem("Metrics panel"u8, "N"u8, _showMetrics)) _showMetrics = !_showMetrics;
         if (ImGui.MenuItem("Region for the numbers: drag a rectangle"u8, "R"u8, _regionArmed)) _regionArmed = !_regionArmed;
         if (_region != null && ImGui.MenuItem("Numbers of the whole image"u8, "Shift+R"u8)) _region = null;
+        if (ImGui.BeginMenu("Align"u8))
+        {
+            if (ImGui.MenuItem("Align panel: move the second image by hand"u8, "A"u8, _alignMode)) SetAlignMode(!_alignMode);
+            if (ImGui.MenuItem("Align automatically"u8, "Shift+A"u8, false, !_alignRunning)) _deferred = () => AutoAlign(fine: false);
+            if (ImGui.MenuItem("Fine align from the pose it has"u8, "Q"u8, false, !_alignRunning)) _deferred = () => AutoAlign(fine: true);
+            if (ImGui.MenuItem("Region for the alignment to go by: drag a rectangle"u8, default(ReadOnlySpan<byte>), _alignRegionArmed)) _alignRegionArmed = !_alignRegionArmed;
+            if (_alignRegion != null && ImGui.MenuItem("Align by the whole image again"u8)) _alignRegion = null;
+            if (ImGui.MenuItem("Back to where it was"u8, _alignMode ? "Backspace"u8 : default)) ResetPose();
+            if (ImGui.MenuItem("Save the aligned image..."u8, "Ctrl+E"u8)) _deferred = SaveAligned;
+            ImGui.EndMenu();
+        }
         if (ImGui.BeginMenu("Copy and save"u8))
         {
             if (ImGui.MenuItem("Copy what the panes show"u8, "Ctrl+C"u8)) _deferred = CopyView;
@@ -506,6 +529,7 @@ internal sealed unsafe partial class MainWindow
         _settings.DifferenceMask = _mask;
         _settings.ShowMetrics = _showMetrics;
         _settings.PixelValues = _pixelValues;
+        _settings.AlignModel = _alignModel;
         _settings.Save(Path.Combine(_options.ProfileDir, "settings.json"));
     }
 }

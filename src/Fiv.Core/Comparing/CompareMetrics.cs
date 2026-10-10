@@ -234,6 +234,8 @@ public static unsafe class CompareMetrics
             sums = Pass(first, second, area, scaleFirst, scaleSecond, colour, anyFloat, FloatBins, half, binsPerUnit, cancel);
         }
         if (sums == null) return null;
+        // Two turned images whose rectangles overlap need not have a pixel in common.
+        if (sums.Pixels + sums.Ignored == 0) return new MetricsResult { Area = area, Unit = unit, Peak = fixedPeak, PixelAligned = aligned };
 
         double peak = fixedPeak;
         if (anyFloat) peak = sums.Highest > sums.Lowest ? sums.Highest - sums.Lowest : 1;
@@ -366,9 +368,11 @@ public static unsafe class CompareMetrics
                 float* br = rows + 4 * width, bg = rows + 5 * width, bb = rows + 6 * width, ba = rows + 7 * width;
                 for (int y = top; y < bottom; y++)
                 {
-                    first.ReadRow(y, area.X, width, ar, ag, ab, aa, scaleFirst);
-                    second.ReadRow(y, area.X, width, br, bg, bb, ba, scaleSecond);
-                    for (int i = 0; i < width; i++)
+                    // The pixels of the row both images cover: all of it, unless one of them is turned.
+                    if (!CommonSpan(first, second, y, area, out int left, out int count)) continue;
+                    first.ReadRow(y, left, count, ar, ag, ab, aa, scaleFirst);
+                    second.ReadRow(y, left, count, br, bg, bb, ba, scaleSecond);
+                    for (int i = 0; i < count; i++)
                     {
                         if (colour)
                         {
@@ -415,7 +419,7 @@ public static unsafe class CompareMetrics
                             }
                         }
                     }
-                    sums.Pixels += width;
+                    sums.Pixels += count;
                 }
             }
             return sums;
@@ -443,5 +447,18 @@ public static unsafe class CompareMetrics
             }
         });
         return cancel.IsCancellationRequested ? null : total;
+    }
+
+    /// <summary>
+    /// The pixels of canvas row <paramref name="y"/> within <paramref name="area"/> that both
+    /// images cover: <paramref name="count"/> of them from <paramref name="left"/> on. False if there are none.
+    /// </summary>
+    internal static bool CommonSpan(CompareSource first, CompareSource second, int y, CanvasRect area, out int left, out int count)
+    {
+        first.RowSpan(y, out int leftA, out int rightA);
+        second.RowSpan(y, out int leftB, out int rightB);
+        left = Math.Max(Math.Max(leftA, leftB), area.X);
+        count = Math.Min(Math.Min(rightA, rightB), area.Right) - left;
+        return count > 0 && y >= area.Y && y < area.Bottom;
     }
 }

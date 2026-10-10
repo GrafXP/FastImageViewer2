@@ -50,6 +50,9 @@ public struct MixSettings
 
     /// <summary>For a difference and a similarity: the colours.</summary>
     public Colormap Colors;
+
+    /// <summary>For a similarity: show it only where the second image, which is then drawn too, has pixels.</summary>
+    public bool WithinSecond;
 }
 
 /// <summary>
@@ -153,6 +156,7 @@ public sealed unsafe class CompareRenderer : IDisposable
         {
             MixKind.Checker => new Vector4(Math.Max(1, mix.Amount), mix.OriginX, mix.OriginY, 0),
             MixKind.Difference => new Vector4(mix.Difference.Scale, mix.Difference.Gain, mix.Difference.Floor, mix.Difference.Threshold),
+            MixKind.Heat => new Vector4(mix.Amount, mix.WithinSecond ? 1 : 0, 0, 0),
             _ => new Vector4(mix.Amount, mix.OriginX, mix.OriginY, 0),
         };
         constants.Mode = (uint)mix.Kind;

@@ -149,6 +149,7 @@ internal sealed unsafe partial class MainWindow
         _mask = settings.DifferenceMask;
         _showMetrics = settings.ShowMetrics;
         _pixelValues = settings.PixelValues;
+        _alignModel = settings.AlignModel;
         _files.AddRange(options.Files);
         _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE),
             (long)(options.CacheMb ?? settings.CacheMb) << 20, (long)(options.VramMb ?? settings.VramMb) << 20);
@@ -1292,12 +1293,13 @@ internal sealed unsafe partial class MainWindow
         Invalidate();
     }
 
-    void OnMouseWheel(int delta, int screenX, int screenY)
+    void OnMouseWheel(int delta, int screenX, int screenY, bool shift, bool control)
     {
         var point = new System.Drawing.Point(screenX, screenY);
         PInvoke.ScreenToClient(_hwnd, &point);
         double factor = Math.Pow(WheelZoomStep, delta / (double)PInvoke.WHEEL_DELTA);
-        if (Comparing) CompareWheel(factor, point.X, point.Y);
+        if (Comparing && AlignWheel(delta, control, shift)) { } // while aligning, the wheel with Ctrl or Shift turns or scales the image
+        else if (Comparing) CompareWheel(factor, point.X, point.Y);
         else if (_shown is { HasSize: true }) _view.ZoomAt(_view.Zoom * factor, point.X - ViewX, point.Y - ViewY, ViewWidth, ViewHeight);
         else return;
         Invalidate();
@@ -1334,6 +1336,7 @@ internal sealed unsafe partial class MainWindow
     {
         _panning = false;
         _dragDivider = false;
+        _dragAlign = false;
         EndRegion();
         _dragItem = -1;
         PInvoke.ReleaseCapture();
@@ -1414,6 +1417,9 @@ internal sealed unsafe partial class MainWindow
                 break;
             case VIRTUAL_KEY.VK_D when control:
                 SaveDifferenceValues();
+                break;
+            case VIRTUAL_KEY.VK_E when control:
+                SaveAligned();
                 break;
             case VIRTUAL_KEY.VK_V:
                 _pixelValues = !_pixelValues;
@@ -1678,7 +1684,8 @@ internal sealed unsafe partial class MainWindow
                 return default;
 
             case PInvoke.WM_MOUSEWHEEL:
-                OnMouseWheel(HighWord((nint)wParam.Value), LowWord(lParam.Value), HighWord(lParam.Value));
+                OnMouseWheel(HighWord((nint)wParam.Value), LowWord(lParam.Value), HighWord(lParam.Value),
+                    shift: (wParam.Value & 0x0004) != 0, control: (wParam.Value & 0x0008) != 0); // MK_SHIFT, MK_CONTROL
                 return default;
             case PInvoke.WM_MOUSEMOVE:
                 OnMouseMove(LowWord(lParam.Value), HighWord(lParam.Value));
@@ -1738,6 +1745,7 @@ internal sealed unsafe partial class MainWindow
                 WriteStatistics();
                 SaveSettings();
                 _metricsCancel?.Cancel();
+                _alignCancel?.Cancel();
                 StopWatching();
                 _thumbs?.Dispose();
                 _pendingPack?.Dispose();

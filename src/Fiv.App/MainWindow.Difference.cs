@@ -40,6 +40,7 @@ internal sealed unsafe partial class MainWindow
     /// <summary>The canvas rectangle the numbers are taken over; null: everywhere both images have pixels.</summary>
     CanvasRect? _region;
     bool _regionArmed, _dragRegion;
+    bool _dragRegionForAlign; // the rectangle being dragged is the alignment's (see MainWindow.Align), not the numbers'
     double _regionStartX, _regionStartY;
 
     readonly ConcurrentQueue<Action> _uiQueue = new();
@@ -160,7 +161,8 @@ internal sealed unsafe partial class MainWindow
         key = default;
         if (_canvasWidth <= 0 || !TryGetPair(out LoadedImage first, out LoadedImage second)) return false;
         if (first.Full is not { } a || second.Full is not { } b) return false; // numbers are of the full images only
-        key = new MetricsKey(a, b, ImageToCanvas(first), ImageToCanvas(second), _region);
+        (int indexA, int indexB) = _pick.Pair;
+        key = new MetricsKey(a, b, ImageToCanvas(indexA), ImageToCanvas(indexB), _region);
         return true;
     }
 
@@ -174,6 +176,7 @@ internal sealed unsafe partial class MainWindow
     {
         bool map = _compareMode == CompareMode.Ssim;
         if (!Comparing || !(_showMetrics || map || _autoGain)) return;
+        if (_dragAlign) return; // an image is being dragged into place: the numbers follow when it is let go
         if (!TryMetricsKey(out MetricsKey key)) return;
         if (_similarityMap != null && key.WholeImage != _similarityKey) DropSimilarity(); // of another pair: its memory is wanted back
         if (_metrics != null && _metricsFinal && _metricsKey == key && (!map || _metricsWithMap)) return;
@@ -328,14 +331,18 @@ internal sealed unsafe partial class MainWindow
         if (SimilarityReady)
         {
             Affine2 mapToPane = CanvasToPane(pane.First, r).After(Affine2.ScaleTranslate(1, 1, _similarityArea.X, _similarityArea.Y));
-            var mix = new MixSettings { Kind = MixKind.Heat, Amount = _similarityGain, Colors = _differenceMap };
+            // The map is a rectangle. Of a second image that is turned, only where it has pixels is the map shown.
+            GpuImage? second = pane.Second >= 0 && !_compare[pane.Second].Pose.IsIdentity ? Drawable(pane.Second) : null;
+            var mix = new MixSettings { Kind = MixKind.Heat, Amount = _similarityGain, Colors = _differenceMap, WithinSecond = second != null };
+            Affine2 secondToPane = second != null ? CanvasToPane(pane.Second, r).After(ImageToCanvas(pane.Second)) : Affine2.Identity;
             _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
-            _compareRenderer.Draw(_similarityGpu, mapToPane, ViewOf(pane.First).Zoom, null, Affine2.Identity, 1, _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
+            _compareRenderer.Draw(_similarityGpu, mapToPane, ViewOf(pane.First).Zoom, second, secondToPane, second != null ? ZoomOf(pane.Second, _compare[pane.Second].Image!) : 1,
+                _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
         }
         else if (Drawable(pane.First) is { } texture)
         {
             LoadedImage image = _compare[pane.First].Image!;
-            _renderer!.Draw(texture, CanvasToScreen(pane.First, r).After(ImageToCanvas(image)), ZoomOf(pane.First, image), _display, r.X, r.Y, r.Width, r.Height);
+            _renderer!.Draw(texture, CanvasToScreen(pane.First, r).After(ImageToCanvas(pane.First)), ZoomOf(pane.First, image), _display, r.X, r.Y, r.Width, r.Height);
         }
     }
 
@@ -362,7 +369,7 @@ internal sealed unsafe partial class MainWindow
 
     // ---------------------------------------------------------------- overlays: colour bar, readout, region
 
-    const uint ColorRegion = 0xFF40E0FF, ColorGrid = 0x58808080, ColorValue = 0xFFFFFFFF, ColorDelta = 0xFF70E8FF,
+    const uint ColorRegion = 0xFF40E0FF, ColorAlignRegion = 0xFF70F080, ColorGrid = 0x58808080, ColorValue = 0xFFFFFFFF, ColorDelta = 0xFF70E8FF,
         ColorRed = 0xFF8C8CFF, ColorGreen = 0xFF8CFF8C, ColorBlue = 0xFFFFB48C;
 
     // The same inks for writing on bright pixels.
@@ -536,16 +543,33 @@ internal sealed unsafe partial class MainWindow
         return true;
     }
 
-    /// <summary>The region's outline in a pane, or the outline being dragged.</summary>
+    /// <summary>
+    /// The outlines of the regions in a pane, also while they are being dragged: the one the
+    /// numbers are taken over, and, in its own colour and named, the one the alignment goes by.
+    /// </summary>
     void DrawRegion(ImDrawListPtr draw, int item, in PaneRect r, float scale)
     {
-        if (_region is not { } region || item < 0) return;
-        Affine2 toScreen = CanvasToScreen(item, r);
-        (double x0, double y0) = toScreen.Apply(region.X, region.Y);
-        (double x1, double y1) = toScreen.Apply(region.Right, region.Bottom);
-        Vector2 p0 = new(MathF.Round((float)x0), MathF.Round((float)y0)), p1 = new(MathF.Round((float)x1), MathF.Round((float)y1));
-        draw.AddRect(p0 - Vector2.One, p1 + Vector2.One, ColorOutline, 0, 0, 3 * scale);
-        draw.AddRect(p0, p1, ColorRegion, 0, 0, scale);
+        if (item < 0) return;
+        if (_region is { } region) Outline(region, ColorRegion, default, r);
+        if (_alignRegion is { } alignRegion) Outline(alignRegion, ColorAlignRegion, "align by this"u8, r);
+
+        void Outline(CanvasRect rect, uint color, ReadOnlySpan<byte> name, in PaneRect pane)
+        {
+            Affine2 toScreen = CanvasToScreen(item, pane);
+            (double x0, double y0) = toScreen.Apply(rect.X, rect.Y);
+            (double x1, double y1) = toScreen.Apply(rect.Right, rect.Bottom);
+            Vector2 p0 = new(MathF.Round((float)x0), MathF.Round((float)y0)), p1 = new(MathF.Round((float)x1), MathF.Round((float)y1));
+            draw.AddRect(p0 - Vector2.One, p1 + Vector2.One, ColorOutline, 0, 0, 3 * scale);
+            draw.AddRect(p0, p1, color, 0, 0, scale);
+            if (name.IsEmpty) return;
+            // Its name inside the top left corner, on the dark outline's colour so that it reads on any picture.
+            fixed (byte* text = name)
+            {
+                var at = new Vector2(p0.X + 4 * scale, p0.Y + 2 * scale);
+                draw.AddText(at + Vector2.One, ColorOutline, text, text + name.Length);
+                draw.AddText(at, color, text, text + name.Length);
+            }
+        }
     }
 
     // ---------------------------------------------------------------- pixel values in the cells
@@ -738,9 +762,13 @@ internal sealed unsafe partial class MainWindow
         if (metrics != null)
         {
             CanvasRect area = metrics.Area;
+            // Of a turned image not all of the rectangle is covered: then the number of pixels says how much is.
+            bool all = metrics.Pixels + metrics.Ignored == area.Area;
             if (_region != null
-                    ? Utf8.TryWrite(_utf8, $"Region at x {area.X}, y {area.Y}: {area.Width} x {area.Height} pixels, {MetricsReport.UnitName(metrics.Unit)} values", out n)
-                    : Utf8.TryWrite(_utf8, $"Everywhere both have pixels: {area.Width} x {area.Height}, {MetricsReport.UnitName(metrics.Unit)} values", out n))
+                    ? all ? Utf8.TryWrite(_utf8, $"Region at x {area.X}, y {area.Y}: {area.Width} x {area.Height} pixels, {MetricsReport.UnitName(metrics.Unit)} values", out n)
+                          : Utf8.TryWrite(_utf8, $"Region at x {area.X}, y {area.Y}: {metrics.Pixels} pixels of {area.Width} x {area.Height}, {MetricsReport.UnitName(metrics.Unit)} values", out n)
+                    : all ? Utf8.TryWrite(_utf8, $"Everywhere both have pixels: {area.Width} x {area.Height}, {MetricsReport.UnitName(metrics.Unit)} values", out n)
+                          : Utf8.TryWrite(_utf8, $"Everywhere both have pixels: {metrics.Pixels} pixels within {area.Width} x {area.Height}, {MetricsReport.UnitName(metrics.Unit)} values", out n))
             {
                 fixed (byte* text = _utf8)
                 {
@@ -748,7 +776,7 @@ internal sealed unsafe partial class MainWindow
                     TextDim(text);
                 }
             }
-            if (!metrics.PixelAligned) ImGui.TextDisabled("One image is scaled to lie over the other: its pixels are blended."u8);
+            if (!metrics.PixelAligned) ImGui.TextDisabled("One image is scaled, turned or moved by part of a pixel to lie over the other: its pixels are blended."u8);
             if (metrics.Ignored > 0 && Utf8.TryWrite(_utf8, $"{metrics.Ignored} pixels left out: not a number\0", out _))
             {
                 fixed (byte* text = _utf8) TextDim(text);
@@ -888,16 +916,30 @@ internal sealed unsafe partial class MainWindow
 
     // ---------------------------------------------------------------- the region
 
-    /// <summary>The left button went down over a pane while a region is to be drawn: the rectangle starts here. False if not over the canvas.</summary>
-    bool BeginRegion(int x, int y)
+    /// <summary>
+    /// The left button went down over a pane while a region is to be drawn: the rectangle starts
+    /// here. With <paramref name="forAlign"/> it is the region the alignment goes by, otherwise
+    /// the one the numbers are taken over. False if not over the canvas.
+    /// </summary>
+    bool BeginRegion(int x, int y, bool forAlign = false)
     {
         int p = PaneAt(x, y);
         if (p < 0 || _panes[p].First < 0 || _canvasWidth <= 0) return false;
         (_regionStartX, _regionStartY) = CanvasToScreen(_panes[p].First, _panes[p].Rect).Inverse().Apply(x, y);
         _dragRegion = true;
-        _regionArmed = false;
+        _dragRegionForAlign = forAlign;
         _dragItem = _panes[p].First;
-        _region = null;
+        if (forAlign)
+        {
+            _alignRegionArmed = false;
+            _alignRegion = null;
+            _alignReport = null; // what the last alignment said was about what it went by then
+        }
+        else
+        {
+            _regionArmed = false;
+            _region = null;
+        }
         return true;
     }
 
@@ -911,7 +953,9 @@ internal sealed unsafe partial class MainWindow
         (double cx, double cy) = CanvasToScreen(_panes[p].First, _panes[p].Rect).Inverse().Apply(x, y);
         int left = (int)Math.Floor(Math.Clamp(Math.Min(_regionStartX, cx), 0, _canvasWidth)), top = (int)Math.Floor(Math.Clamp(Math.Min(_regionStartY, cy), 0, _canvasHeight));
         int right = (int)Math.Ceiling(Math.Clamp(Math.Max(_regionStartX, cx), 0, _canvasWidth)), bottom = (int)Math.Ceiling(Math.Clamp(Math.Max(_regionStartY, cy), 0, _canvasHeight));
-        _region = CanvasRect.FromEdges(left, top, right, bottom);
+        CanvasRect dragged = CanvasRect.FromEdges(left, top, right, bottom);
+        if (_dragRegionForAlign) _alignRegion = dragged;
+        else _region = dragged;
     }
 
     /// <summary>The drag ended. A rectangle of less than two pixels either way was a click: the whole image again.</summary>
@@ -919,7 +963,14 @@ internal sealed unsafe partial class MainWindow
     {
         if (!_dragRegion) return;
         _dragRegion = false;
-        if (_region is { } region && (region.Width < 2 || region.Height < 2)) _region = null;
+        if (_dragRegionForAlign)
+        {
+            if (_alignRegion is { } region && (region.Width < 2 || region.Height < 2)) _alignRegion = null;
+        }
+        else if (_region is { } region && (region.Width < 2 || region.Height < 2))
+        {
+            _region = null;
+        }
     }
 
     // ---------------------------------------------------------------- keys

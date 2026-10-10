@@ -87,6 +87,7 @@ internal sealed unsafe partial class MainWindow
             DrawCompareOverlays();
             if (_showComparePanel) DrawComparePanel();
             if (_showMetrics) DrawMetricsPanel();
+            if (_alignMode) DrawAlignPanel();
         }
         else
         {

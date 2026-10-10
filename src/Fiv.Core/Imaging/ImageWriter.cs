@@ -10,18 +10,19 @@ namespace Fiv.Imaging;
 public static unsafe class ImageWriter
 {
     /// <summary>
-    /// Writes a BGRA8 image as 8-bit RGB (or RGBA with <paramref name="alpha"/>), an 8- or 16-bit
-    /// grey image as it is. Rows are filtered with "sub" and compressed fast: the files are
-    /// some 10 % larger than they could be, and written several times sooner.
+    /// Writes a BGRA8 or RGBA16 image as 8- or 16-bit RGB (or RGBA with <paramref name="alpha"/>),
+    /// an 8- or 16-bit grey image as it is. Rows are filtered with "sub" and compressed fast: the
+    /// files are some 10 % larger than they could be, and written several times sooner.
     /// </summary>
     public static void WritePng(string path, DecodedImage image, bool alpha = false)
     {
         (int channels, int bytesPerSample, byte colorType) = image.Layout switch
         {
             PixelLayout.Bgra8 => alpha ? (4, 1, (byte)6) : (3, 1, (byte)2),
+            PixelLayout.Rgba16 => alpha ? (4, 2, (byte)6) : (3, 2, (byte)2),
             PixelLayout.Gray8 => (1, 1, (byte)0),
             PixelLayout.Gray16 => (1, 2, (byte)0),
-            _ => throw new ArgumentException("PNG takes 8-bit colour and 8- or 16-bit grey images.", nameof(image)),
+            _ => throw new ArgumentException("PNG takes 8- and 16-bit colour and grey images.", nameof(image)),
         };
         int width = image.Width, height = image.Height, pixelBytes = channels * bytesPerSample, rowBytes = width * pixelBytes;
 
@@ -54,6 +55,17 @@ public static unsafe class ImageWriter
                                 row[x * channels + 1] = source[x * 4 + 1];
                                 row[x * channels + 2] = source[x * 4];
                                 if (alpha) row[x * 4 + 3] = source[x * 4 + 3];
+                            }
+                            break;
+                        case PixelLayout.Rgba16:
+                            // Red, green, blue (and alpha) as stored, the high byte of each first.
+                            for (int x = 0; x < width; x++)
+                            {
+                                for (int c = 0; c < channels; c++)
+                                {
+                                    row[(x * channels + c) * 2] = source[(x * 4 + c) * 2 + 1];
+                                    row[(x * channels + c) * 2 + 1] = source[(x * 4 + c) * 2];
+                                }
                             }
                             break;
                         case PixelLayout.Gray8:

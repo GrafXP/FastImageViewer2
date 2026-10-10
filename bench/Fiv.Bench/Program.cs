@@ -24,6 +24,7 @@ return command switch
     "browse" => BrowseCommand.Run(repoRoot, options.Get("--root", corpus), options.GetOrNull("--out")),
     "compare" => CompareCommand.Run(repoRoot, options.Get("--root", corpus), options.GetOrNull("--out")),
     "metrics" => MetricsCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 5), options.GetOrNull("--out")),
+    "align" => AlignCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 5), options.GetOrNull("--out")),
     "thumbs" => ThumbsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     _ => Help(),
@@ -45,6 +46,8 @@ static int Help()
         fivbench compare [--root <dir>] [--out <file.md>]      the compare modes: loading a set, zoom and pan in each mode, switching
         fivbench metrics [--root <dir>] [--reps 5] [--out <file.md>]
                                                               comparing on the CPU: error metrics, structural similarity, saving the views
+        fivbench align   [--root <dir>] [--reps 5] [--out <file.md>]
+                                                              aligning two images: time, and how close to known moves, turns and scalings
         fivbench thumbs  [--root <dir>] [--out <file.md>]      thumbnails: making them, and reading them back from the pack
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus

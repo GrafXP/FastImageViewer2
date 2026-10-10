@@ -193,19 +193,89 @@ public static unsafe class CompareExport
         {
             float* output = (float*)(result.Pixels + (long)y * result.Stride);
             new Span<float>(output, canvasWidth).Fill(float.NaN);
-            CanvasRect common = first.Bounds.Intersect(second.Bounds).Intersect(new CanvasRect(0, y, canvasWidth, 1));
-            if (common.IsEmpty) return rows;
-            int n = common.Width;
+            if (!CompareMetrics.CommonSpan(first, second, y, new CanvasRect(0, y, canvasWidth, 1), out int left, out int n)) return rows;
             fixed (float* r = rows)
             {
-                first.ReadRow(y, common.X, n, r, r + n, r + 2 * n, r + 3 * n, scaleFirst);
-                second.ReadRow(y, common.X, n, r + 4 * n, r + 5 * n, r + 6 * n, r + 7 * n, scaleSecond);
+                first.ReadRow(y, left, n, r, r + n, r + 2 * n, r + 3 * n, scaleFirst);
+                second.ReadRow(y, left, n, r + 4 * n, r + 5 * n, r + 6 * n, r + 7 * n, scaleSecond);
                 for (int i = 0; i < n; i++)
-                    output[common.X + i] = DifferenceMath.Signed(Pixel(r, i, n), Pixel(r + 4 * n, i, n), channel, out _);
+                    output[left + i] = DifferenceMath.Signed(Pixel(r, i, n), Pixel(r + 4 * n, i, n), channel, out _);
             }
             return rows;
         }, _ => { });
         return result;
+    }
+
+    /// <summary>
+    /// An image as it lies on the canvas, cut to <paramref name="area"/>: in its own layout and
+    /// units, each pixel what <see cref="CompareSource.ReadRow"/> gives there (one stored pixel
+    /// where the image is pixel-aligned, four blended where it is not). This is the aligned
+    /// image for saving: laid over the image it was aligned to, it is what the numbers were
+    /// taken of. Where the image has no pixel the result is transparent black for colour, 0 for
+    /// grey and not a number for float; <paramref name="complete"/> says whether there is no such place.
+    /// </summary>
+    public static DecodedImage Resampled(CompareSource source, CanvasRect area, out bool complete)
+    {
+        PixelLayout layout = source.Image.Layout;
+        int width = area.Width, height = area.Height;
+        var result = new DecodedImage(width, height, layout, width, height);
+        long covered = 0;
+        Parallel.For(0, height, () => new float[width * 4], (row, _, planes) =>
+        {
+            int y = area.Y + row;
+            byte* output = result.Pixels + (long)row * result.Stride;
+            if (layout == PixelLayout.GrayFloat) new Span<float>(output, width).Fill(float.NaN);
+            else new Span<byte>(output, result.Stride).Clear();
+            source.RowSpan(y, out int left, out int right);
+            left = Math.Max(left, area.X);
+            int n = Math.Min(right, area.Right) - left;
+            if (n <= 0) return planes;
+            Interlocked.Add(ref covered, n);
+            fixed (float* p = planes)
+            {
+                float* r = p, g = p + width, b = p + 2 * width, a = p + 3 * width;
+                source.ReadRow(y, left, n, r, g, b, a, 1f);
+                int at = left - area.X;
+                switch (layout)
+                {
+                    case PixelLayout.Bgra8:
+                        for (int i = 0; i < n; i++)
+                        {
+                            byte* q = output + (at + i) * 4;
+                            q[0] = Whole8(b[i]);
+                            q[1] = Whole8(g[i]);
+                            q[2] = Whole8(r[i]);
+                            q[3] = Whole8(a[i]);
+                        }
+                        break;
+                    case PixelLayout.Gray8:
+                        for (int i = 0; i < n; i++) output[at + i] = Whole8(r[i]);
+                        break;
+                    case PixelLayout.Gray16:
+                        for (int i = 0; i < n; i++) ((ushort*)output)[at + i] = Whole16(r[i]);
+                        break;
+                    case PixelLayout.GrayFloat:
+                        for (int i = 0; i < n; i++) ((float*)output)[at + i] = r[i];
+                        break;
+                    case PixelLayout.Rgba16:
+                        for (int i = 0; i < n; i++)
+                        {
+                            ushort* q = (ushort*)output + (at + i) * 4;
+                            q[0] = Whole16(r[i]);
+                            q[1] = Whole16(g[i]);
+                            q[2] = Whole16(b[i]);
+                            q[3] = Whole16(a[i]);
+                        }
+                        break;
+                }
+            }
+            return planes;
+        }, _ => { });
+        complete = covered == (long)width * height;
+        return result;
+
+        static byte Whole8(float value) => (byte)(Math.Clamp(value, 0f, 255f) + 0.5f);
+        static ushort Whole16(float value) => (ushort)(Math.Clamp(value, 0f, 65535f) + 0.5f);
     }
 
     /// <summary>Row by row over the canvas: both images in the units the GPU samples, and which pixels each has.</summary>
@@ -231,10 +301,12 @@ public static unsafe class CompareExport
     static void Read(CompareSource source, int y, int width, float* planes, bool* has, float scale)
     {
         new Span<bool>(has, width).Clear();
-        CanvasRect row = source.Bounds.Intersect(new CanvasRect(0, y, width, 1));
-        if (row.IsEmpty) return;
-        source.ReadRow(y, row.X, row.Width, planes + row.X, planes + width + row.X, planes + 2 * width + row.X, planes + 3 * width + row.X, scale);
-        new Span<bool>(has + row.X, row.Width).Fill(true);
+        source.RowSpan(y, out int left, out int right);
+        left = Math.Max(left, 0);
+        int count = Math.Min(right, width) - left;
+        if (count <= 0) return;
+        source.ReadRow(y, left, count, planes + left, planes + width + left, planes + 2 * width + left, planes + 3 * width + left, scale);
+        new Span<bool>(has + left, count).Fill(true);
     }
 
     static Vector4 Pixel(float* planes, int x, int width) => new(planes[x], planes[width + x], planes[2 * width + x], planes[3 * width + x]);

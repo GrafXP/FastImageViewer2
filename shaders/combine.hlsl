@@ -20,7 +20,7 @@ cbuffer Combine : register(b0)
     float4 pane;      // xy: the pane's top-left corner on the render target
     float4 amount;    // modes 0-3: x: the divider's position in pane pixels, the opacity of B, or the cell size; yz: where the cells are centred
                       // mode 4: x: gain / value range; y: gain; z: the smallest value of A a relative difference is taken of; w: the mask's threshold
-                      // mode 5: x: gain
+                      // mode 5: x: gain; y: 1 if the similarity is shown only where B has pixels
     uint mode;        // 0: A left of a divider, B right; 1: A above, B below; 2: B over A with an opacity; 3: checkerboard of A and B;
                       // 4: the difference B - A; 5: A is a similarity, shown as 1 - A
     uint channel;
@@ -102,7 +102,7 @@ float4 ps_main(float4 position : SV_Position) : SV_Target
     }
     else if (mode == 5)
     {
-        color = storedA.a < 0 ? backdrop.rgb : MapColor((1 - storedA.r) * amount.x);
+        color = storedA.a < 0 || (amount.y > 0.5 && storedB.a < 0) ? backdrop.rgb : MapColor((1 - storedA.r) * amount.x);
     }
     else
     {

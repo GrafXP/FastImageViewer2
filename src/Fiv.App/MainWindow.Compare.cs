@@ -37,6 +37,9 @@ internal sealed unsafe partial class MainWindow
         /// <summary>Its own zoom and position, in use when the panes are not linked.</summary>
         public ViewState View;
 
+        /// <summary>Where it has been moved to from its place on the canvas, to lie on another image (see MainWindow.Align).</summary>
+        public AlignPose Pose;
+
         /// <summary>Where the file is in the list that next and previous walk, or -1.</summary>
         public int ListPosition = -1;
     }
@@ -102,6 +105,7 @@ internal sealed unsafe partial class MainWindow
         _opacity = 0.5f;
         _differenceGain = 1;
         ResetMetrics();
+        ResetAlign();
         _fast = false;
         if (!_hwnd.IsNull) PInvoke.KillTimer(_hwnd, SettleTimerId);
 
@@ -141,6 +145,7 @@ internal sealed unsafe partial class MainWindow
         _compareError = null;
         _compareRenderer?.ReleaseTargets();
         ResetMetrics();
+        ResetAlign();
 
         // Zoom, position and brightness window were the set's. Whatever is shown next is shown
         // as an image newly arrived at: fitted to the view, with its own window.
@@ -540,10 +545,29 @@ internal sealed unsafe partial class MainWindow
             if (item.View.Fit) item.View.FitTo(width, height, pane.Width, pane.Height);
     }
 
-    /// <summary>Stored pixel coordinates of an image of the set to canvas coordinates.</summary>
-    Affine2 ImageToCanvas(LoadedImage image) =>
-        CompareGeometry.Placement(_sizeMatch, image.UprightWidth, image.UprightHeight, _canvasWidth, _canvasHeight)
-            .After(image.Orientation.ToUpright(image.Width, image.Height));
+    /// <summary>Where an image's placement puts it on the canvas: upright coordinates to canvas coordinates.</summary>
+    Affine2 PlacementOf(LoadedImage image) =>
+        CompareGeometry.Placement(_sizeMatch, image.UprightWidth, image.UprightHeight, _canvasWidth, _canvasHeight);
+
+    /// <summary>Stored pixel coordinates of an image to canvas coordinates, as its orientation and its placement have it: before any alignment.</summary>
+    Affine2 PlacedOnCanvas(LoadedImage image) => PlacementOf(image).After(image.Orientation.ToUpright(image.Width, image.Height));
+
+    /// <summary>The canvas point an image's alignment turns and scales about: its centre where the placement puts it.</summary>
+    (double X, double Y) PoseCentre(LoadedImage image) => PlacementOf(image).Apply(image.UprightWidth / 2, image.UprightHeight / 2);
+
+    /// <summary>
+    /// Stored pixel coordinates of an image of the set, which must have its size, to canvas
+    /// coordinates: orientation, placement, and on top of them its alignment.
+    /// </summary>
+    Affine2 ImageToCanvas(int item)
+    {
+        CompareItem entry = _compare[item];
+        LoadedImage image = entry.Image!;
+        Affine2 placed = PlacedOnCanvas(image);
+        if (entry.Pose.IsIdentity) return placed;
+        (double x, double y) = PoseCentre(image);
+        return entry.Pose.About(x, y).After(placed);
+    }
 
     /// <summary>Canvas coordinates to pixels of a pane, counted from the pane's corner.</summary>
     Affine2 CanvasToPane(int item, in PaneRect pane) => ViewOf(item).ToScreen(pane.Width, pane.Height);
@@ -552,8 +576,7 @@ internal sealed unsafe partial class MainWindow
     Affine2 CanvasToScreen(int item, in PaneRect pane) => Affine2.ScaleTranslate(1, 1, pane.X, pane.Y).After(CanvasToPane(item, pane));
 
     /// <summary>Screen pixels per image pixel, which decides how the image is sampled.</summary>
-    double ZoomOf(int item, LoadedImage image) =>
-        ViewOf(item).Zoom * CompareGeometry.Placement(_sizeMatch, image.UprightWidth, image.UprightHeight, _canvasWidth, _canvasHeight).A;
+    double ZoomOf(int item, LoadedImage image) => ViewOf(item).Zoom * PlacementOf(image).A * _compare[item].Pose.Scale;
 
     int PaneAt(int x, int y)
     {
@@ -592,7 +615,7 @@ internal sealed unsafe partial class MainWindow
         value = default;
         if (item < 0 || item >= _compare.Count || _compare[item].Image is not { HasSize: true } image) return false;
         if (!TryGetCursorCanvas(out double canvasX, out double canvasY)) return false;
-        (double ix, double iy) = ImageToCanvas(image).Inverse().Apply(canvasX, canvasY);
+        (double ix, double iy) = ImageToCanvas(item).Inverse().Apply(canvasX, canvasY);
         x = (int)Math.Floor(ix);
         y = (int)Math.Floor(iy);
         return image.TryReadPixel(x, y, out value);
@@ -608,6 +631,7 @@ internal sealed unsafe partial class MainWindow
     {
         LayoutCompare();
         UpdateMetrics();
+        UpdateAlignScore();
         if (_canvasWidth <= 0) return;
         for (int p = 0; p < _paneCount; p++)
         {
@@ -617,7 +641,7 @@ internal sealed unsafe partial class MainWindow
             {
                 if (Drawable(pane.First) is not { } texture) continue;
                 LoadedImage image = _compare[pane.First].Image!;
-                _renderer!.Draw(texture, CanvasToScreen(pane.First, r).After(ImageToCanvas(image)), ZoomOf(pane.First, image), _display, r.X, r.Y, r.Width, r.Height);
+                _renderer!.Draw(texture, CanvasToScreen(pane.First, r).After(ImageToCanvas(pane.First)), ZoomOf(pane.First, image), _display, r.X, r.Y, r.Width, r.Height);
                 continue;
             }
 
@@ -627,15 +651,13 @@ internal sealed unsafe partial class MainWindow
             double zoomA = 1, zoomB = 1;
             if (a != null)
             {
-                LoadedImage image = _compare[pane.First].Image!;
-                aToPane = CanvasToPane(pane.First, r).After(ImageToCanvas(image));
-                zoomA = ZoomOf(pane.First, image);
+                aToPane = CanvasToPane(pane.First, r).After(ImageToCanvas(pane.First));
+                zoomA = ZoomOf(pane.First, _compare[pane.First].Image!);
             }
             if (b != null)
             {
-                LoadedImage image = _compare[pane.Second].Image!;
-                bToPane = CanvasToPane(pane.Second, r).After(ImageToCanvas(image));
-                zoomB = ZoomOf(pane.Second, image);
+                bToPane = CanvasToPane(pane.Second, r).After(ImageToCanvas(pane.Second));
+                zoomB = ZoomOf(pane.Second, _compare[pane.Second].Image!);
             }
             MixSettings mix = _compareMode switch
             {
@@ -762,9 +784,16 @@ internal sealed unsafe partial class MainWindow
     {
         CompareItem entry = _compare[item];
         ReadOnlySpan<char> name = Path.GetFileName(entry.Path.AsSpan());
-        return entry.Image is { HasSize: true } image
-            ? Utf8.TryWrite(_utf8, $"{item + 1}  {name}   {image.UprightWidth:0} x {image.UprightHeight:0}\0", out _)
-            : Utf8.TryWrite(_utf8, $"{item + 1}  {name}\0", out _);
+        if (entry.Image is not { HasSize: true } image) return Utf8.TryWrite(_utf8, $"{item + 1}  {name}\0", out _);
+        if (!Utf8.TryWrite(_utf8, $"{item + 1}  {name}   {image.UprightWidth:0} x {image.UprightHeight:0}", out int n)) return false;
+        // An image that has been moved says by how much: what is compared is no longer the file as it is.
+        if (!entry.Pose.IsIdentity && Utf8.TryWrite(_utf8.AsSpan(n, _utf8.Length - n - 1), $"   moved  ", out int more))
+        {
+            n += more;
+            n += WritePose(entry.Pose, _utf8.AsSpan(n, _utf8.Length - n - 1));
+        }
+        _utf8[n] = 0;
+        return true;
     }
 
     /// <summary>Writes "2   x 120  y 45   R 10  G 20  B 30" for the pixel of an image under the linked cursor. False if there is none.</summary>
@@ -803,7 +832,7 @@ internal sealed unsafe partial class MainWindow
                 if (pane.First >= 0)
                 {
                     if (_pixelValues && _compare[pane.First].Image is { HasSize: true } image)
-                        DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight, image, ImageToCanvas(image).Inverse(), null, Affine2.Identity);
+                        DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight, image, ImageToCanvas(pane.First).Inverse(), null, Affine2.Identity);
                     DrawRegion(draw, pane.First, r, scale);
                     DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: false);
                     if (_linkedCursor && cursor && p != hovered)
@@ -821,7 +850,7 @@ internal sealed unsafe partial class MainWindow
                     _compare[pane.First].Image is { HasSize: true } imageA && _compare[pane.Second].Image is { HasSize: true } imageB)
                 {
                     DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight,
-                        imageA, ImageToCanvas(imageA).Inverse(), imageB, ImageToCanvas(imageB).Inverse());
+                        imageA, ImageToCanvas(pane.First).Inverse(), imageB, ImageToCanvas(pane.Second).Inverse());
                 }
                 DrawRegion(draw, pane.First, r, scale);
                 DrawPaneState(draw, pane.First, r, pane.Second);
@@ -856,8 +885,10 @@ internal sealed unsafe partial class MainWindow
 
         if (_dragDivider || (!_panning && NearDivider(_mouseX, _mouseY)))
             ImGui.SetMouseCursor(_splitRows ? ImGuiMouseCursor.ResizeNs : ImGuiMouseCursor.ResizeEw);
-        else if ((_regionArmed || _dragRegion) && hovered >= 0)
+        else if ((_regionArmed || _alignRegionArmed || _dragRegion) && hovered >= 0)
             ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeAll);
+        else if (_dragAlign || (_alignMode && hovered >= 0))
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand); // a drag moves the image, not the view
     }
 
     /// <summary>
@@ -1066,6 +1097,9 @@ internal sealed unsafe partial class MainWindow
             ImGui.Checkbox("Metrics (N)"u8, ref _showMetrics);
             ImGui.SameLine();
             ImGui.Checkbox("Pixel values (V)"u8, ref _pixelValues);
+            ImGui.SameLine();
+            bool align = _alignMode;
+            if (ImGui.Checkbox("Align (A)"u8, ref align)) SetAlignMode(align);
         }
         ImGui.End();
     }
@@ -1107,6 +1141,7 @@ internal sealed unsafe partial class MainWindow
             }
             return true;
         }
+        if (AlignKey(key, shift)) return true; // while aligning, the arrow keys and their neighbours move the image
         switch (key)
         {
             case VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_NEXT or VIRTUAL_KEY.VK_SPACE:
@@ -1180,17 +1215,24 @@ internal sealed unsafe partial class MainWindow
         view.ZoomAt(view.Zoom * factor, x - pane.X, y - pane.Y, pane.Width, pane.Height);
     }
 
-    /// <summary>The left button went down: on the divider it drags the divider, elsewhere it makes the pane's image the active one and pans.</summary>
+    /// <summary>
+    /// The left button went down: on the divider it drags the divider, elsewhere it makes the
+    /// pane's image the active one and pans; while aligning it moves the image that is being aligned.
+    /// </summary>
     void CompareMouseDown(int x, int y, bool shift)
     {
         LayoutCompare();
         _dragItem = -1;
-        if ((_regionArmed || shift) && BeginRegion(x, y)) return;
+        // A rectangle, if one was asked for: the one the alignment goes by, or the numbers'. With
+        // Shift a drag draws the numbers' too, except while aligning, where Shift turns the image.
+        if (_alignRegionArmed && BeginRegion(x, y, forAlign: true)) return;
+        if ((_regionArmed || (shift && !_alignMode)) && BeginRegion(x, y)) return;
         _dragDivider = NearDivider(x, y);
         if (_dragDivider) return;
         int p = PaneAt(x, y);
         if (p < 0) return;
         _dragItem = _panes[p].First;
+        if (_alignMode && _dragItem >= 0 && BeginAlignDrag(turn: shift)) return; // and the pair stays as it is
         if (_compareMode.HasPanes() && _dragItem >= 0 && _pick.Select(_dragItem))
         {
             StopBlink();
@@ -1209,6 +1251,10 @@ internal sealed unsafe partial class MainWindow
             if (_paneCount == 0) return;
             PaneRect pane = _panes[0].Rect;
             _splitAt = Math.Clamp(_splitRows ? (y - pane.Y) / (float)pane.Height : (x - pane.X) / (float)pane.Width, 0, 1);
+        }
+        else if (_dragAlign)
+        {
+            AlignDrag(x, y, dx, dy);
         }
         else if (_dragItem >= 0 && _canvasWidth > 0)
         {

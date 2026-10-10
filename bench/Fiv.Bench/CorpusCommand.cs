@@ -88,9 +88,15 @@ public static unsafe class CorpusCommand
     }
 
     /// <summary>
+    /// What it takes to lay compare\scene_5_moved.jpg on scene_1_original.jpg: 23.6 pixels right
+    /// and 14.2 up, turned by 0.75 degrees and 0.4 % larger, about the middle of the image.
+    /// </summary>
+    public static readonly Fiv.Comparing.AlignPose MovedPose = new(23.6, -14.2, 0.75, 1.004);
+
+    /// <summary>
     /// One 24 MP scene in versions that differ the way compared images do: recompressed, changed
-    /// in one small place and a little brighter, and at half the size. Plus an image with
-    /// transparency, which the rest of the corpus lacks.
+    /// in one small place and a little brighter, at half the size, and moved, turned and scaled
+    /// a little. Plus an image with transparency, which the rest of the corpus lacks.
     /// </summary>
     static void Compare(string folder)
     {
@@ -124,6 +130,21 @@ public static unsafe class CorpusCommand
                 }
             }
             Write(folder, "scene_3_changed.jpg", p => File.WriteAllBytes(p, ImageWriters.EncodeJpeg(scene.Bgra, scene.Stride, width, height, 95, TurboJpeg.Subsampling.S420)));
+        }
+
+        if (Missing(folder, "scene_5_moved.jpg"))
+        {
+            // The scene as a camera that was moved, turned and zoomed a little would have taken it.
+            // Laid on the original under MovedPose it is the same picture again, which is what
+            // the alignment is measured against. Where the turned frame looks past the scene it is black.
+            using var scene = SyntheticImage.Create(width, height, 7, marker: false);
+            using var original = new Fiv.Imaging.DecodedImage(width, height, Fiv.Imaging.PixelLayout.Bgra8, width, height);
+            Buffer.MemoryCopy(scene.Bgra, original.Pixels, original.ByteCount, original.ByteCount);
+            // A pixel of the moved image shows the scene at pose(pixel): seen from the moved image, the original lies under the inverse.
+            Fiv.Imaging.Affine2 originalToMoved = MovedPose.About(width / 2.0, height / 2.0).Inverse();
+            using Fiv.Imaging.DecodedImage moved = Fiv.Comparing.CompareExport.Resampled(
+                new Fiv.Comparing.CompareSource(original, originalToMoved), new Fiv.Comparing.CanvasRect(0, 0, width, height), out _);
+            Write(folder, "scene_5_moved.jpg", p => File.WriteAllBytes(p, ImageWriters.EncodeJpeg(moved.Pixels, moved.Stride, width, height, 95, TurboJpeg.Subsampling.S420)));
         }
 
         if (Missing(folder, "alpha.png"))
