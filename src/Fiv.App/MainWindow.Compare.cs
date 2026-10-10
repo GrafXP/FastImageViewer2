@@ -100,6 +100,8 @@ internal sealed unsafe partial class MainWindow
         _dragDivider = false;
         _splitAt = 0.5f;
         _opacity = 0.5f;
+        _differenceGain = 1;
+        ResetMetrics();
         _fast = false;
         if (!_hwnd.IsNull) PInvoke.KillTimer(_hwnd, SettleTimerId);
 
@@ -138,6 +140,7 @@ internal sealed unsafe partial class MainWindow
         _dragDivider = false;
         _compareError = null;
         _compareRenderer?.ReleaseTargets();
+        ResetMetrics();
 
         // Zoom, position and brightness window were the set's. Whatever is shown next is shown
         // as an image newly arrived at: fitted to the view, with its own window.
@@ -471,6 +474,14 @@ internal sealed unsafe partial class MainWindow
             case CompareMode.Single when _blink:
                 SetBlinkInterval(direction > 0 ? _blinkMs * 2 / 3 : _blinkMs * 3 / 2); // up is faster
                 break;
+            case CompareMode.Difference:
+                // Twice or half the gain; with Shift a fourth of that step.
+                _differenceGain = Math.Clamp(_differenceGain * MathF.Pow(2, direction * (fine ? 0.25f : 1f)), 1, MaxGain);
+                _autoGain = false;
+                break;
+            case CompareMode.Ssim:
+                _similarityGain = Math.Clamp(_similarityGain * MathF.Pow(2, direction * (fine ? 0.25f : 1f)), 1, MaxSimilarityGain);
+                break;
         }
     }
 
@@ -596,6 +607,7 @@ internal sealed unsafe partial class MainWindow
     void RenderCompare()
     {
         LayoutCompare();
+        UpdateMetrics();
         if (_canvasWidth <= 0) return;
         for (int p = 0; p < _paneCount; p++)
         {
@@ -629,12 +641,20 @@ internal sealed unsafe partial class MainWindow
             {
                 CompareMode.Split => new MixSettings { Kind = _splitRows ? MixKind.SplitRows : MixKind.SplitColumns, Amount = DividerAt(r) },
                 CompareMode.Blend => new MixSettings { Kind = MixKind.Blend, Amount = _opacity },
+                CompareMode.Difference => DifferenceMix(),
                 _ => new MixSettings { Kind = MixKind.Checker, Amount = _checkerSize, OriginX = r.Width / 2, OriginY = r.Height / 2 },
             };
             try
             {
-                _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
-                _compareRenderer.Draw(a, aToPane, zoomA, b, bToPane, zoomB, _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
+                if (_compareMode == CompareMode.Ssim)
+                {
+                    RenderSimilarity(pane, r);
+                }
+                else
+                {
+                    _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
+                    _compareRenderer.Draw(a, aToPane, zoomA, b, bToPane, zoomB, _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
+                }
                 _compareError = null;
             }
             catch (GraphicsException e)
@@ -782,6 +802,9 @@ internal sealed unsafe partial class MainWindow
                 DrawPaneState(draw, pane.First, r);
                 if (pane.First >= 0)
                 {
+                    if (_pixelValues && _compare[pane.First].Image is { HasSize: true } image)
+                        DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight, image, ImageToCanvas(image).Inverse(), null, Affine2.Identity);
+                    DrawRegion(draw, pane.First, r, scale);
                     DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: false);
                     if (_linkedCursor && cursor && p != hovered)
                     {
@@ -794,16 +817,47 @@ internal sealed unsafe partial class MainWindow
             else
             {
                 // Two images in the pane: the first is named in the left corner, the second in the right one.
+                if (_pixelValues && pane.First >= 0 && pane.Second >= 0 &&
+                    _compare[pane.First].Image is { HasSize: true } imageA && _compare[pane.Second].Image is { HasSize: true } imageB)
+                {
+                    DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight,
+                        imageA, ImageToCanvas(imageA).Inverse(), imageB, ImageToCanvas(imageB).Inverse());
+                }
+                DrawRegion(draw, pane.First, r, scale);
                 DrawPaneState(draw, pane.First, r, pane.Second);
                 DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: true);
                 DrawImagePlates(draw, pane.Second, r.Right - margin, r.Y + margin, fromRight: true, numbered: true);
                 if (_compareMode == CompareMode.Split) DrawDivider(draw, r, scale);
+                if (_compareMode is CompareMode.Difference or CompareMode.Ssim)
+                {
+                    DrawColorBar(draw, r, scale);
+                    // What the two differ by under the cursor, between their two readouts.
+                    if (WriteDifferenceReadout())
+                    {
+                        fixed (byte* text = _utf8)
+                        {
+                            float width = ImGui.CalcTextSize(text).X + 2 * MathF.Round(4 * scale);
+                            Plate(draw, MathF.Floor(r.X + (r.Width - width) / 2), r.Y + margin, ColorDelta);
+                        }
+                    }
+                    if (_compareMode == CompareMode.Ssim && !SimilarityReady && _compareError == null && Drawable(pane.First) != null && Drawable(pane.Second) != null)
+                    {
+                        Utf8Of(_metricsError ?? (TryMetricsKey(out _) ? "Computing the structural similarity..." : "Waiting for both images in full..."));
+                        fixed (byte* text = _utf8)
+                        {
+                            Vector2 size = ImGui.CalcTextSize(text);
+                            Plate(draw, MathF.Floor(r.X + (r.Width - size.X) / 2), MathF.Floor(r.Y + (r.Height - size.Y) / 2), ColorTextDim);
+                        }
+                    }
+                }
             }
             draw.PopClipRect();
         }
 
         if (_dragDivider || (!_panning && NearDivider(_mouseX, _mouseY)))
             ImGui.SetMouseCursor(_splitRows ? ImGuiMouseCursor.ResizeNs : ImGuiMouseCursor.ResizeEw);
+        else if ((_regionArmed || _dragRegion) && hovered >= 0)
+            ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeAll);
     }
 
     /// <summary>
@@ -883,6 +937,8 @@ internal sealed unsafe partial class MainWindow
         CompareMode.Grid => "Grid"u8,
         CompareMode.Split => "Split"u8,
         CompareMode.Blend => "Blend"u8,
+        CompareMode.Difference => "Difference"u8,
+        CompareMode.Ssim => "SSIM"u8,
         _ => "Checkerboard"u8,
     };
 
@@ -893,6 +949,8 @@ internal sealed unsafe partial class MainWindow
         CompareMode.Grid => "grid",
         CompareMode.Split => "split",
         CompareMode.Blend => "blend",
+        CompareMode.Difference => "difference",
+        CompareMode.Ssim => "structural similarity",
         _ => "checkerboard",
     };
 
@@ -912,7 +970,7 @@ internal sealed unsafe partial class MainWindow
         {
             _comparePanelHeight = ImGui.GetWindowSize().Y;
             Vector4 on = ImGui.GetStyle().Colors[(int)ImGuiCol.ButtonActive];
-            for (CompareMode mode = CompareMode.Single; mode <= CompareMode.Checker; mode++)
+            for (CompareMode mode = CompareMode.Single; mode <= CompareModeExtensions.Last; mode++)
             {
                 if (mode != CompareMode.Single) ImGui.SameLine();
                 bool current = mode == _compareMode;
@@ -961,6 +1019,27 @@ internal sealed unsafe partial class MainWindow
                 case CompareMode.Checker:
                     ImGui.SliderInt("cell size"u8, ref _checkerSize, Settings.MinCheckerSize, Settings.MaxCheckerSize);
                     break;
+                case CompareMode.Difference:
+                    for (DifferenceKind kind = DifferenceKind.Absolute; kind <= DifferenceKind.Relative; kind++)
+                    {
+                        if (kind != DifferenceKind.Absolute) ImGui.SameLine();
+                        if (ImGui.RadioButton(KindLabel(kind), _differenceKind == kind)) _differenceKind = kind;
+                    }
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("|"u8);
+                    ImGui.SameLine();
+                    ImGui.Checkbox("mark what is over the threshold (W)"u8, ref _mask);
+                    if (ImGui.SliderFloat("gain"u8, ref _differenceGain, 1, MaxGain, "%.4g x"u8, ImGuiSliderFlags.Logarithmic)) _autoGain = false;
+                    ImGui.SameLine();
+                    if (ImGui.Button("Auto"u8)) AutoGain();
+                    ImGui.SameLine();
+                    DrawColormapChoice();
+                    break;
+                case CompareMode.Ssim:
+                    ImGui.SliderFloat("gain"u8, ref _similarityGain, 1, MaxSimilarityGain, "%.4g x"u8, ImGuiSliderFlags.Logarithmic);
+                    ImGui.SameLine();
+                    DrawColormapChoice();
+                    break;
                 default:
                 {
                     bool linked = _linked;
@@ -983,8 +1062,31 @@ internal sealed unsafe partial class MainWindow
             ImGui.TextDisabled("|"u8);
             ImGui.SameLine();
             ImGui.Checkbox("Labels"u8, ref _paneLabels);
+            ImGui.SameLine();
+            ImGui.Checkbox("Metrics (N)"u8, ref _showMetrics);
+            ImGui.SameLine();
+            ImGui.Checkbox("Pixel values (V)"u8, ref _pixelValues);
         }
         ImGui.End();
+    }
+
+    /// <summary>The colour map of the difference or similarity view, as a drop-down list.</summary>
+    void DrawColormapChoice()
+    {
+        Colormap current = CurrentMap;
+        Utf8Of(current.DisplayName());
+        ImGui.SetNextItemWidth(130 * (float)_dpiScale);
+        bool open;
+        fixed (byte* preview = _utf8) open = ImGui.BeginCombo("colours (G)"u8, preview);
+        if (!open) return;
+        for (int i = 0; i < Colormaps.Count; i++)
+        {
+            var map = (Colormap)i;
+            Utf8Of(map.DisplayName());
+            fixed (byte* label = _utf8)
+                if (ImGui.Selectable(label, map == current)) SetCurrentMap(map);
+        }
+        ImGui.EndCombo();
     }
 
     // ---------------------------------------------------------------- input
@@ -1031,7 +1133,7 @@ internal sealed unsafe partial class MainWindow
                 return true;
             case VIRTUAL_KEY.VK_M:
             {
-                const int modes = (int)CompareMode.Checker + 1;
+                const int modes = (int)CompareModeExtensions.Last + 1;
                 SetCompareMode((CompareMode)(((int)_compareMode + (shift ? modes - 1 : 1)) % modes));
                 return true;
             }
@@ -1049,7 +1151,7 @@ internal sealed unsafe partial class MainWindow
                 _showComparePanel = !_showComparePanel;
                 return true;
         }
-        return false;
+        return DifferenceKey(key, shift);
     }
 
     void CompareKeyUp(VIRTUAL_KEY key)
@@ -1079,10 +1181,11 @@ internal sealed unsafe partial class MainWindow
     }
 
     /// <summary>The left button went down: on the divider it drags the divider, elsewhere it makes the pane's image the active one and pans.</summary>
-    void CompareMouseDown(int x, int y)
+    void CompareMouseDown(int x, int y, bool shift)
     {
         LayoutCompare();
         _dragItem = -1;
+        if ((_regionArmed || shift) && BeginRegion(x, y)) return;
         _dragDivider = NearDivider(x, y);
         if (_dragDivider) return;
         int p = PaneAt(x, y);
@@ -1097,7 +1200,11 @@ internal sealed unsafe partial class MainWindow
 
     void CompareDrag(int x, int y, int dx, int dy)
     {
-        if (_dragDivider)
+        if (_dragRegion)
+        {
+            DragRegion(x, y);
+        }
+        else if (_dragDivider)
         {
             if (_paneCount == 0) return;
             PaneRect pane = _panes[0].Rect;

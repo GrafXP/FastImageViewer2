@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Fiv.Imaging;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Direct3D;
@@ -142,6 +143,54 @@ public sealed unsafe class GraphicsDevice : IDisposable
     {
         D3D11_VIEWPORT viewport = new() { TopLeftX = x, TopLeftY = y, Width = width, Height = height, MaxDepth = 1 };
         Context->RSSetViewports(1, &viewport);
+    }
+
+    /// <summary>
+    /// What has been drawn into a rectangle of the back buffer since <see cref="BeginFrame"/>, as
+    /// an opaque BGRA image. The rectangle is cut to the buffer; null if nothing of it is left.
+    /// To be called before <see cref="Present"/>, which gives the buffer away.
+    /// </summary>
+    public DecodedImage? Capture(int x, int y, int width, int height)
+    {
+        int left = Math.Max(0, x), top = Math.Max(0, y), right = Math.Min(Width, x + width), bottom = Math.Min(Height, y + height);
+        if (_swapChain == null || right <= left || bottom <= top) return null;
+        width = right - left;
+        height = bottom - top;
+
+        ID3D11Texture2D* back = null, staging = null;
+        try
+        {
+            Guid iid = ID3D11Texture2D.IID_Guid;
+            Hr.Check(_swapChain->GetBuffer(0, &iid, (void**)&back), "GetBuffer");
+            D3D11_TEXTURE2D_DESC desc = default;
+            desc.Width = (uint)width;
+            desc.Height = (uint)height;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE.D3D11_USAGE_STAGING;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_FLAG.D3D11_CPU_ACCESS_READ;
+            Hr.Check(Device->CreateTexture2D(&desc, (D3D11_SUBRESOURCE_DATA*)null, &staging), "CreateTexture2D");
+            var box = new D3D11_BOX { left = (uint)left, top = (uint)top, front = 0, right = (uint)right, bottom = (uint)bottom, back = 1 };
+            Context->CopySubresourceRegion((ID3D11Resource*)staging, 0, 0, 0, 0, (ID3D11Resource*)back, 0, &box);
+
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            Hr.Check(Context->Map((ID3D11Resource*)staging, 0, D3D11_MAP.D3D11_MAP_READ, 0, &mapped), "Map");
+            var image = new DecodedImage(width, height, PixelLayout.Bgra8, width, height);
+            for (int row = 0; row < height; row++)
+            {
+                uint* source = (uint*)((byte*)mapped.pData + (long)row * mapped.RowPitch), target = (uint*)(image.Pixels + (long)row * image.Stride);
+                for (int i = 0; i < width; i++) target[i] = source[i] | 0xFF000000; // the swap chain's alpha means nothing
+            }
+            Context->Unmap((ID3D11Resource*)staging, 0);
+            return image;
+        }
+        finally
+        {
+            if (staging != null) staging->Release();
+            if (back != null) back->Release();
+        }
     }
 
     public void Present(bool waitForVerticalBlank)

@@ -100,6 +100,8 @@ public class CompareGeometryTests
     [InlineData(CompareMode.Split, true, false)]
     [InlineData(CompareMode.Blend, true, false)]
     [InlineData(CompareMode.Checker, true, false)]
+    [InlineData(CompareMode.Difference, true, false)]
+    [InlineData(CompareMode.Ssim, true, false)]
     public void ModesAreClassified(CompareMode mode, bool overlay, bool panes)
     {
         Assert.Equal(overlay, mode.IsOverlay());

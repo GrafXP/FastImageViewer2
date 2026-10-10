@@ -41,6 +41,15 @@ public sealed class Settings
     public bool CompareLinked = true, CompareCursor = true, CompareLabels = true, CompareSplitRows;
     public int CompareBlinkMs = 500, CompareCheckerSize = 64;
 
+    // The difference view: what it shows, in which colours (one map for the signed kind, one for
+    // the others), and from which difference on a pixel counts as changed. The threshold is a
+    // fraction of the value range (2 / 255: two levels of an 8-bit image), so that it means
+    // the same for images of any depth.
+    public DifferenceKind DifferenceKind = DifferenceKind.Absolute;
+    public Colormap DifferenceMap = Colormap.Gray, SignedMap = Colormap.Coolwarm;
+    public float DifferenceThreshold = 2f / 255;
+    public bool DifferenceMask, ShowMetrics, PixelValues;
+
     /// <summary>Moves an entry to the front of a recent list, case-insensitively, and trims the list.</summary>
     public static void Remember(List<string> list, string path)
     {
@@ -102,6 +111,18 @@ public sealed class Settings
                     case "compareSplitRows": settings.CompareSplitRows = reader.GetBoolean(); break;
                     case "compareBlinkMs": settings.CompareBlinkMs = Math.Clamp(reader.GetInt32(), MinBlinkMs, MaxBlinkMs); break;
                     case "compareCheckerSize": settings.CompareCheckerSize = Math.Clamp(reader.GetInt32(), MinCheckerSize, MaxCheckerSize); break;
+                    case "differenceKind": settings.DifferenceKind = Enum.TryParse(reader.GetString(), true, out DifferenceKind kind) && Enum.IsDefined(kind) ? kind : DifferenceKind.Absolute; break;
+                    case "differenceMap": settings.DifferenceMap = Enum.TryParse(reader.GetString(), true, out Colormap map) && Enum.IsDefined(map) ? map : Colormap.Gray; break;
+                    case "signedMap": settings.SignedMap = Enum.TryParse(reader.GetString(), true, out Colormap signed) && Enum.IsDefined(signed) ? signed : Colormap.Coolwarm; break;
+                    case "differenceThreshold":
+                    {
+                        float threshold = reader.GetSingle();
+                        settings.DifferenceThreshold = float.IsFinite(threshold) ? Math.Clamp(threshold, 0f, 1f) : 2f / 255;
+                        break;
+                    }
+                    case "differenceMask": settings.DifferenceMask = reader.GetBoolean(); break;
+                    case "showMetrics": settings.ShowMetrics = reader.GetBoolean(); break;
+                    case "pixelValues": settings.PixelValues = reader.GetBoolean(); break;
                     default: reader.Skip(); break; // a setting of a newer version: leave it
                 }
             }
@@ -176,6 +197,13 @@ public sealed class Settings
                 writer.WriteBoolean("compareSplitRows", CompareSplitRows);
                 writer.WriteNumber("compareBlinkMs", CompareBlinkMs);
                 writer.WriteNumber("compareCheckerSize", CompareCheckerSize);
+                writer.WriteString("differenceKind", DifferenceKind.ToString());
+                writer.WriteString("differenceMap", DifferenceMap.ToString());
+                writer.WriteString("signedMap", SignedMap.ToString());
+                writer.WriteNumber("differenceThreshold", DifferenceThreshold);
+                writer.WriteBoolean("differenceMask", DifferenceMask);
+                writer.WriteBoolean("showMetrics", ShowMetrics);
+                writer.WriteBoolean("pixelValues", PixelValues);
                 writer.WriteEndObject();
             }
             // Written whole or not at all: to a temporary file first, then renamed over the old one.

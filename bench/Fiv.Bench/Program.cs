@@ -23,6 +23,7 @@ return command switch
     "navigate" => NavigateCommand.Run(repoRoot, options.Get("--folder", Path.Combine(corpus, "series", "jpeg_12mp")), options.GetOrNull("--out"), options.Has("--panels")),
     "browse" => BrowseCommand.Run(repoRoot, options.Get("--root", corpus), options.GetOrNull("--out")),
     "compare" => CompareCommand.Run(repoRoot, options.Get("--root", corpus), options.GetOrNull("--out")),
+    "metrics" => MetricsCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 5), options.GetOrNull("--out")),
     "thumbs" => ThumbsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     _ => Help(),
@@ -42,6 +43,8 @@ static int Help()
                                                               next/previous in a folder: single steps, and the arrow key held
         fivbench browse  [--root <dir>] [--out <file.md>]      the folder panel: first screen of thumbnails, new and seen before
         fivbench compare [--root <dir>] [--out <file.md>]      the compare modes: loading a set, zoom and pan in each mode, switching
+        fivbench metrics [--root <dir>] [--reps 5] [--out <file.md>]
+                                                              comparing on the CPU: error metrics, structural similarity, saving the views
         fivbench thumbs  [--root <dir>] [--out <file.md>]      thumbnails: making them, and reading them back from the pack
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus

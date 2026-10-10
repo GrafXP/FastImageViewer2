@@ -146,6 +146,7 @@ IWICBitmapScaler
 
 // --- dialogs, clipboard, recycle bin
 IFileOpenDialog
+IFileSaveDialog
 IShellItem
 IShellItemArray
 SIGDN

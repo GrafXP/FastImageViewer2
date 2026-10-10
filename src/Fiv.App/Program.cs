@@ -48,7 +48,14 @@ internal sealed class Options
     /// <summary>A separate single-instance group, so that benchmark runs never talk to the user's own viewer.</summary>
     public string Instance { get; private set; } = "";
 
-    /// <summary>The compare mode to start in, instead of the one used last: single, side, grid, split, blend or checker.</summary>
+    /// <summary>
+    /// Saves go into this folder under fixed names, without the Save dialog, and "copy the view"
+    /// writes a file there instead of using the clipboard (tests: nothing to click, and the
+    /// clipboard of whoever is working on the machine is left alone).
+    /// </summary>
+    public string? ExportDir { get; private set; }
+
+    /// <summary>The compare mode to start in, instead of the one used last: single, side, grid, split, blend, checker, diff or ssim.</summary>
     public Fiv.Comparing.CompareMode? CompareMode { get; private set; }
 
     static Fiv.Comparing.CompareMode? ParseCompareMode(string name) => name.ToLowerInvariant() switch
@@ -59,6 +66,8 @@ internal sealed class Options
         "split" => Fiv.Comparing.CompareMode.Split,
         "blend" => Fiv.Comparing.CompareMode.Blend,
         "checker" or "checkerboard" => Fiv.Comparing.CompareMode.Checker,
+        "diff" or "difference" => Fiv.Comparing.CompareMode.Difference,
+        "ssim" => Fiv.Comparing.CompareMode.Ssim,
         _ => null,
     };
 
@@ -81,6 +90,7 @@ internal sealed class Options
                 case "--filmstrip": options.ShowFilmstrip = true; break;
                 case "--profile" when i + 1 < args.Length: options.ProfileDir = Path.GetFullPath(args[++i]); break;
                 case "--compare-mode" when i + 1 < args.Length: options.CompareMode = ParseCompareMode(args[++i]); break;
+                case "--export-dir" when i + 1 < args.Length: options.ExportDir = Path.GetFullPath(args[++i]); break;
                 case "--cache-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int cacheMb): options.CacheMb = Math.Max(0, cacheMb); i++; break;
                 case "--vram-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int vramMb): options.VramMb = Math.Max(0, vramMb); i++; break;
                 case "--delay-gpu" when i + 1 < args.Length && int.TryParse(args[i + 1], out int delay): options.DelayGpuMs = delay; i++; break;

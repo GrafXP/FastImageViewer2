@@ -47,6 +47,7 @@ internal sealed unsafe partial class MainWindow
         ("D", "display panel: black, white, gamma, exposure, channel"),
         ("H / Shift+H", "show colour, red, green, blue, alpha, luma in turn"),
         ("Z", "100 %"),
+        ("V", "write the pixel values into the pixels at high zoom"),
         ("F11 / F12", "fullscreen / timing overlay"),
         ("Right click", "menu"),
         ("Esc", "close a dialog, leave fullscreen, stop comparing, or quit"),
@@ -54,13 +55,24 @@ internal sealed unsafe partial class MainWindow
         ("C", "compare the selected images, or this one with the next; again to stop"),
         ("Drop 2 to 16 files", "compare them; with Ctrl held, add them to the comparison"),
         ("While comparing", ""),
-        ("M / Shift+M", "mode: single, side by side, grid, split, blend, checkerboard"),
+        ("M / Shift+M", "mode: single, side by side, grid, split, blend, checkerboard, difference, SSIM"),
         ("1 ... 9", "go to that image; held down, only until released"),
         ("Left / Right, Home / End", "previous / next, first / last image of the set"),
         ("X / K", "swap the two images / blink between them"),
-        ("Up / Down", "divider, opacity, cell size or blink rate (with Shift: finer)"),
+        ("Up / Down", "divider, opacity, cell size, blink rate or gain (with Shift: finer)"),
         ("L", "link zoom and position of the panes, or not"),
         ("P", "compare panel"),
+        ("", ""),
+        ("E / Shift+E", "difference view; in it: absolute, signed, squared, relative"),
+        ("G / Shift+G", "colours of the difference and of the similarity"),
+        ("W", "mark the pixels that differ by more than the threshold"),
+        (", / .", "threshold down / up"),
+        ("N", "metrics panel: MAE, MSE, PSNR, largest error, share over the threshold, SSIM, histogram"),
+        ("R / Shift+R", "drag a region for the numbers (also Shift+drag) / the whole image again"),
+        ("Ctrl+C", "copy what the panes show"),
+        ("Ctrl+S", "save the two-image view at full resolution (PNG)"),
+        ("Ctrl+D", "save the difference values (32-bit float TIFF)"),
+        ("Ctrl+Shift+S", "save the numbers (CSV or JSON)"),
     ];
 
     // ---------------------------------------------------------------- what the actions work on
@@ -197,6 +209,14 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
+    /// <summary>Copies what the image area shows, as it is on screen and without what is drawn over it. Done in the next frame, where the picture is.</summary>
+    void CopyView()
+    {
+        if (_gpu == null) return;
+        _captureView = true;
+        Invalidate();
+    }
+
     void CopyPath()
     {
         List<string> paths = ActionPaths();
@@ -228,6 +248,7 @@ internal sealed unsafe partial class MainWindow
         if (ImGui.MenuItem("Folder panel"u8, "B"u8, _showBrowser)) _showBrowser = !_showBrowser;
         if (ImGui.MenuItem("Filmstrip"u8, "T"u8, _showFilmstrip)) _showFilmstrip = !_showFilmstrip;
         if (ImGui.MenuItem("Display panel"u8, "D"u8, _showDisplayPanel)) _showDisplayPanel = !_showDisplayPanel;
+        if (ImGui.MenuItem("Pixel values at high zoom"u8, "V"u8, _pixelValues)) _pixelValues = !_pixelValues;
         if (ImGui.MenuItem("Timing overlay"u8, "F12"u8, _showPerf)) _showPerf = !_showPerf;
         if (ImGui.MenuItem("Fullscreen"u8, "F11"u8, _fullscreen)) _deferred = ToggleFullscreen;
         ImGui.Separator();
@@ -265,9 +286,9 @@ internal sealed unsafe partial class MainWindow
         }
         if (ImGui.BeginMenu("Compare mode"u8))
         {
-            for (CompareMode mode = CompareMode.Single; mode <= CompareMode.Checker; mode++)
+            for (CompareMode mode = CompareMode.Single; mode <= CompareModeExtensions.Last; mode++)
             {
-                if (ImGui.MenuItem(ModeLabel(mode), mode == CompareMode.Single ? "M"u8 : default, mode == _compareMode))
+                if (ImGui.MenuItem(ModeLabel(mode), mode == CompareMode.Single ? "M"u8 : mode == CompareMode.Difference ? "E"u8 : default, mode == _compareMode))
                 {
                     CompareMode chosen = mode;
                     _deferred = () => SetCompareMode(chosen);
@@ -279,6 +300,17 @@ internal sealed unsafe partial class MainWindow
         if (ImGui.MenuItem("Blink"u8, "K"u8, _blink)) _deferred = ToggleBlink;
         if (ImGui.MenuItem("Link zoom and position"u8, "L"u8, _linked)) SetLinked(!_linked);
         if (ImGui.MenuItem("Compare panel"u8, "P"u8, _showComparePanel)) _showComparePanel = !_showComparePanel;
+        if (ImGui.MenuItem("Metrics panel"u8, "N"u8, _showMetrics)) _showMetrics = !_showMetrics;
+        if (ImGui.MenuItem("Region for the numbers: drag a rectangle"u8, "R"u8, _regionArmed)) _regionArmed = !_regionArmed;
+        if (_region != null && ImGui.MenuItem("Numbers of the whole image"u8, "Shift+R"u8)) _region = null;
+        if (ImGui.BeginMenu("Copy and save"u8))
+        {
+            if (ImGui.MenuItem("Copy what the panes show"u8, "Ctrl+C"u8)) _deferred = CopyView;
+            if (ImGui.MenuItem("Save the view at full resolution..."u8, "Ctrl+S"u8, false, _compareMode.IsOverlay())) _deferred = SaveView;
+            if (ImGui.MenuItem("Save the difference values (float TIFF)..."u8, "Ctrl+D"u8)) _deferred = SaveDifferenceValues;
+            if (ImGui.MenuItem("Save the numbers (CSV, JSON)..."u8, "Ctrl+Shift+S"u8)) _deferred = SaveMetrics;
+            ImGui.EndMenu();
+        }
         if (ImGui.MenuItem("Remove this image from the comparison"u8))
         {
             int active = _pick.Active;
@@ -293,7 +325,7 @@ internal sealed unsafe partial class MainWindow
         bool any = _shown != null || _menuPath != null;
         ImGui.BeginDisabled(!any);
         if (ImGui.MenuItem("Show in Explorer"u8) && ActionPaths() is [string first, ..]) FileActions.ShowInExplorer(first);
-        if (ImGui.MenuItem("Copy image"u8, "Ctrl+C"u8)) _deferred = CopyImage;
+        if (ImGui.MenuItem("Copy image"u8, Comparing ? default : "Ctrl+C"u8)) _deferred = CopyImage; // while comparing, Ctrl+C copies the view
         if (ImGui.MenuItem("Copy path"u8, "Ctrl+Shift+C"u8)) CopyPath();
         if (ImGui.MenuItem("Rename..."u8, "F2"u8)) BeginRename();
         if (ImGui.MenuItem("Move to Recycle Bin..."u8, "Del"u8)) BeginDelete();
@@ -467,6 +499,13 @@ internal sealed unsafe partial class MainWindow
         _settings.CompareSplitRows = _splitRows;
         _settings.CompareBlinkMs = _blinkMs;
         _settings.CompareCheckerSize = _checkerSize;
+        _settings.DifferenceKind = _differenceKind;
+        _settings.DifferenceMap = _differenceMap;
+        _settings.SignedMap = _signedMap;
+        _settings.DifferenceThreshold = _threshold;
+        _settings.DifferenceMask = _mask;
+        _settings.ShowMetrics = _showMetrics;
+        _settings.PixelValues = _pixelValues;
         _settings.Save(Path.Combine(_options.ProfileDir, "settings.json"));
     }
 }

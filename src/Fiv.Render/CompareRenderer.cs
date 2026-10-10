@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Fiv.Comparing;
 using Fiv.Imaging;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Direct3D;
@@ -22,18 +23,33 @@ public enum MixKind
 
     /// <summary>The two images alternating in the cells of a checkerboard.</summary>
     Checker = 3,
+
+    /// <summary>The second image less the first, in the colours of a colour map.</summary>
+    Difference = 4,
+
+    /// <summary>The first "image" is a similarity per pixel (1: the same); it is shown as 1 less it, in the colours of a colour map. There is no second.</summary>
+    Heat = 5,
 }
 
-/// <summary>A way of combining two images and its one parameter.</summary>
+/// <summary>A way of combining two images and its parameters.</summary>
 public struct MixSettings
 {
     public MixKind Kind;
 
-    /// <summary>By kind: the divider's position in pixels from the pane's left or top edge, the opacity 0..1, or the cell size in pixels.</summary>
+    /// <summary>
+    /// By kind: the divider's position in pixels from the pane's left or top edge, the opacity
+    /// 0..1, the cell size in pixels, or, for a difference and a similarity, the gain.
+    /// </summary>
     public float Amount;
 
     /// <summary>For the checkerboard: the pane position its cells are centred on.</summary>
     public float OriginX, OriginY;
+
+    /// <summary>For a difference: how it is turned into colours. Values are in the units the GPU samples.</summary>
+    public DifferenceView Difference;
+
+    /// <summary>For a difference and a similarity: the colours.</summary>
+    public Colormap Colors;
 }
 
 /// <summary>
@@ -50,7 +66,7 @@ public sealed unsafe class CompareRenderer : IDisposable
     struct Constants
     {
         public Vector4 Window, Checker, Backdrop, Pane, Amount;
-        public uint Mode, Channel, Unused0, Unused1;
+        public uint Mode, Channel, Kind, Mask;
     }
 
     struct Target
@@ -70,6 +86,8 @@ public sealed unsafe class CompareRenderer : IDisposable
     ID3D11RasterizerState* _rasterizer;
     Target _a, _b;
     int _width, _height;
+    ID3D11ShaderResourceView* _colors;
+    Colormap _colorsOf;
 
     /// <summary>Video memory held by the two intermediate targets.</summary>
     public long ByteCount => 2L * _width * _height * 16;
@@ -131,9 +149,17 @@ public sealed unsafe class CompareRenderer : IDisposable
         constants.Checker = DisplaySettings.CheckerConstants;
         constants.Backdrop = new Vector4(backdrop, 1);
         constants.Pane = new Vector4(paneX, paneY, paneWidth, paneHeight);
-        constants.Amount = new Vector4(mix.Kind == MixKind.Checker ? Math.Max(1, mix.Amount) : mix.Amount, mix.OriginX, mix.OriginY, 0);
+        constants.Amount = mix.Kind switch
+        {
+            MixKind.Checker => new Vector4(Math.Max(1, mix.Amount), mix.OriginX, mix.OriginY, 0),
+            MixKind.Difference => new Vector4(mix.Difference.Scale, mix.Difference.Gain, mix.Difference.Floor, mix.Difference.Threshold),
+            _ => new Vector4(mix.Amount, mix.OriginX, mix.OriginY, 0),
+        };
         constants.Mode = (uint)mix.Kind;
-        constants.Channel = (uint)display.Channel;
+        constants.Channel = (uint)(mix.Kind == MixKind.Difference ? mix.Difference.Channel : (int)display.Channel);
+        constants.Kind = (uint)mix.Difference.Kind;
+        constants.Mask = mix.Difference.Mask ? 1u : 0u;
+        if (mix.Kind is MixKind.Difference or MixKind.Heat) UseColors(mix.Colors);
 
         ID3D11Buffer* buffer = _constants;
         D3D11_MAPPED_SUBRESOURCE mapped;
@@ -150,14 +176,44 @@ public sealed unsafe class CompareRenderer : IDisposable
         context->OMSetBlendState(null, (float*)null, 0xFFFFFFFF);
         context->OMSetDepthStencilState(null, 0);
 
-        ID3D11ShaderResourceView** views = stackalloc ID3D11ShaderResourceView*[2] { _a.Read, _b.Read };
-        context->PSSetShaderResources(0, 2, views);
+        ID3D11ShaderResourceView** views = stackalloc ID3D11ShaderResourceView*[3] { _a.Read, _b.Read, _colors };
+        context->PSSetShaderResources(0, 3, views);
         context->Draw(3, 0);
 
         // The targets must not stay bound for reading: the next frame draws into them again.
-        views[0] = views[1] = null;
-        context->PSSetShaderResources(0, 2, views);
+        views[0] = views[1] = views[2] = null;
+        context->PSSetShaderResources(0, 3, views);
         _gpu.SetViewport(0, 0, _gpu.Width, _gpu.Height);
+    }
+
+    /// <summary>Has the colour map's table in a texture of 256 by 1; made again only when another map is asked for.</summary>
+    void UseColors(Colormap map)
+    {
+        if (_colors != null && _colorsOf == map) return;
+        ID3D11Device* device = _gpu.Device;
+        D3D11_TEXTURE2D_DESC desc = default;
+        desc.Width = Colormaps.Size;
+        desc.Height = 1;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT.DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE.D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_FLAG.D3D11_BIND_SHADER_RESOURCE;
+
+        ID3D11Texture2D* texture;
+        fixed (byte* table = Colormaps.Table(map))
+        {
+            var data = new D3D11_SUBRESOURCE_DATA { pSysMem = table, SysMemPitch = Colormaps.Size * 4 };
+            Hr.Check(device->CreateTexture2D(&desc, &data, &texture), "CreateTexture2D");
+        }
+        ID3D11ShaderResourceView* view;
+        HRESULT hr = device->CreateShaderResourceView((ID3D11Resource*)texture, (D3D11_SHADER_RESOURCE_VIEW_DESC*)null, &view);
+        texture->Release();
+        Hr.Check(hr, "CreateShaderResourceView");
+        if (_colors != null) _colors->Release();
+        _colors = view;
+        _colorsOf = map;
     }
 
     /// <summary>Clears a target to "no image here" and draws one image's stored values into it.</summary>
@@ -223,6 +279,8 @@ public sealed unsafe class CompareRenderer : IDisposable
     public void Dispose()
     {
         ReleaseTargets();
+        if (_colors != null) _colors->Release();
+        _colors = null;
         if (_rasterizer != null) _rasterizer->Release();
         if (_constants != null) _constants->Release();
         if (_pixelShader != null) _pixelShader->Release();

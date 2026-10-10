@@ -40,9 +40,10 @@ public static partial class CompareCommand
     [LibraryImport("user32")]
     private static partial int GetClientRect(nint window, out Rect rect);
 
-    sealed record Case(string Label, string? Mode, string Images, string[] Files);
+    /// <summary>A mode to measure. With <paramref name="Values"/> the view is zoomed in until the pixel values are written into the pixels.</summary>
+    sealed record Case(string Label, string? Mode, string Images, string[] Files, bool Values = false);
 
-    sealed record Result(double ReadyMs, Dictionary<string, string> Frames, int ClientWidth, int ClientHeight, double[] SwitchMs);
+    sealed record Result(double ReadyMs, Dictionary<string, string> Frames, int ClientWidth, int ClientHeight, double[] SwitchMs, double MapMs, string? Metrics);
 
     public static int Run(string repoRoot, string corpus, string? outFile)
     {
@@ -72,18 +73,27 @@ public static partial class CompareCommand
             new("split", "split", "2 of 24 MP", pair),
             new("blend", "blend", "2 of 24 MP", pair),
             new("checkerboard", "checker", "2 of 24 MP", pair),
+            new("difference", "diff", "2 of 24 MP", pair),
+            new("difference, values written into the pixels", "diff", "2 of 24 MP", pair, Values: true),
+            new("structural similarity", "ssim", "2 of 24 MP", pair),
         ];
 
         var sb = new StringBuilder();
         var rows = new StringBuilder();
         double[] switches = [];
         (int Width, int Height) client = default;
+        string? similarity = null;
         foreach (Case c in cases)
         {
             Result? result = Measure(exe, c, switching: c.Mode == "single");
             if (result == null) return 1;
             client = (result.ClientWidth, result.ClientHeight);
             if (result.SwitchMs.Length > 0) switches = result.SwitchMs;
+            if (result.Metrics != null)
+            {
+                similarity = $"The similarity map of two 24 MP images: on screen {result.MapMs:F0} ms after the start, {result.MapMs - result.ReadyMs:F0} ms after the images " +
+                             $"(error numbers {Field(result.Metrics, "basic_ms")} ms, structural similarity of four channels with its map {Field(result.Metrics, "ssim_ms")} ms, on all cores).";
+            }
             string F(string name) => result.Frames.GetValueOrDefault(name, "?");
             rows.AppendLine($"| {c.Label} | {c.Images} | {result.ReadyMs:F0} ms | {F("frames")} | {F("interval_mean_ms")} / {F("interval_max_ms")} ms | {F("cpu_mean_ms")} / {F("cpu_max_ms")} ms |");
         }
@@ -102,6 +112,7 @@ public static partial class CompareCommand
             sb.AppendLine($"Switching between two 24 MP images in the single view ({stats.Count} switches, 300 ms apart), key handled to `Present` returned:");
             sb.AppendLine($"median {stats.Median:F1} ms, p90 {stats.P90:F1} ms, longest {stats.Max:F1} ms.");
         }
+        if (similarity != null) sb.AppendLine().AppendLine(similarity);
 
         Console.Write(sb);
         if (outFile != null)
@@ -119,7 +130,16 @@ public static partial class CompareCommand
         string log = Path.Combine(Path.GetTempPath(), $"fiv_cmp_{instance}.txt");
         var start = new ProcessStartInfo(exe) { UseShellExecute = false };
         foreach (string file in c.Files) start.ArgumentList.Add(file);
-        foreach (string argument in new[] { "--instance", instance, "--no-activate", "--perf-log", log, "--no-panels", "--profile", BenchProfile.Directory })
+        // A case that changes what the viewer remembers (pixel values on) runs on a copy of the
+        // profile: the same window, and nothing of it left for the cases after it.
+        string profile = BenchProfile.Directory;
+        if (c.Values)
+        {
+            profile = BenchProfile.Fresh();
+            string settings = Path.Combine(BenchProfile.Directory, "settings.json");
+            if (File.Exists(settings)) File.Copy(settings, Path.Combine(profile, "settings.json"));
+        }
+        foreach (string argument in new[] { "--instance", instance, "--no-activate", "--perf-log", log, "--no-panels", "--profile", profile })
             start.ArgumentList.Add(argument);
         if (c.Mode != null)
         {
@@ -156,6 +176,37 @@ public static partial class CompareCommand
             }
             int width = rect.Right, height = rect.Bottom;
 
+            // The similarity view computes its map after the images are there: wait for it, so that zooming and panning are measured on the map.
+            double mapMs = 0;
+            string? metrics = null;
+            if (c.Mode == "ssim")
+            {
+                var waited = Stopwatch.StartNew();
+                while (metrics == null && waited.Elapsed.TotalSeconds < 60 && !process.HasExited)
+                {
+                    Thread.Sleep(10);
+                    metrics = Lines(log).FirstOrDefault(l => l.StartsWith("metrics ") && l.Contains("map=1"));
+                }
+                if (metrics == null)
+                {
+                    Console.Error.WriteLine("the similarity map did not arrive");
+                    return null;
+                }
+                mapMs = (long.Parse(Field(metrics, "at")!) - spawned) * 1000.0 / Stopwatch.Frequency;
+                Thread.Sleep(500);
+            }
+            if (c.Values)
+            {
+                // V, then the wheel in by 34 notches at the point the script zooms and pans about: some 150 screen pixels per image pixel.
+                PostMessageW(window, WM_APP_TEST_KEY, 0x56, 0);
+                var at = new Point { X = width / 4, Y = height / 2 };
+                ClientToScreen(window, ref at);
+                PostMessageW(window, WM_MOUSEWHEEL, (120 * 34) << 16, (at.Y << 16) | (at.X & 0xFFFF));
+                // The viewer says what V did in a notice that goes away after 2.6 s, with a frame of
+                // its own: that frame must not fall into the measurement.
+                Thread.Sleep(3200);
+            }
+
             double[] switchMs = [];
             if (switching)
             {
@@ -177,7 +228,7 @@ public static partial class CompareCommand
             if (!process.WaitForExit(8000)) process.Kill();
             string summary = Lines(log).LastOrDefault(l => l.StartsWith("images_shown=")) ?? "";
             var frames = summary.Split(' ').Select(f => f.Split('=', 2)).Where(f => f.Length == 2).ToDictionary(f => f[0], f => f[1]);
-            return new Result(readyMs, frames, width, height, switchMs);
+            return new Result(readyMs, frames, width, height, switchMs, mapMs, metrics);
         }
         finally
         {
@@ -185,6 +236,7 @@ public static partial class CompareCommand
             try
             {
                 File.Delete(log);
+                if (profile != BenchProfile.Directory) Directory.Delete(profile, recursive: true);
             }
             catch (IOException)
             {

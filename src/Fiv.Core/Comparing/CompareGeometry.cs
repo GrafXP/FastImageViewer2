@@ -22,10 +22,19 @@ public enum CompareMode
 
     /// <summary>Two images in one pane, alternating in the cells of a checkerboard.</summary>
     Checker,
+
+    /// <summary>The difference between two images, in the colours of a colour map.</summary>
+    Difference,
+
+    /// <summary>The structural similarity of two images, pixel by pixel, as a heat map.</summary>
+    Ssim,
 }
 
 public static class CompareModeExtensions
 {
+    /// <summary>The last of the modes, for going through them in turn.</summary>
+    public const CompareMode Last = CompareMode.Ssim;
+
     /// <summary>True for the modes that put two images into the same pane.</summary>
     public static bool IsOverlay(this CompareMode mode) => mode >= CompareMode.Split;
 

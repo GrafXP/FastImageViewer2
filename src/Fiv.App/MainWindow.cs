@@ -40,7 +40,7 @@ internal sealed unsafe partial class MainWindow
 
     /// <summary>
     /// Sent by tests: the mouse is at this client position (x in the low word of lParam, y in the
-    /// high word); wParam 1: and its left button goes down, 2: up. Posted mouse messages do not
+    /// high word); wParam 1: and its left button goes down, 2: up; 4 added: with Shift held. Posted mouse messages do not
     /// do: with the real mouse elsewhere, Windows follows a WM_MOUSEMOVE with WM_MOUSELEAVE.
     /// </summary>
     const uint WM_APP_TEST_MOUSE = PInvoke.WM_APP + 22;
@@ -142,6 +142,13 @@ internal sealed unsafe partial class MainWindow
         _splitRows = settings.CompareSplitRows;
         _blinkMs = settings.CompareBlinkMs;
         _checkerSize = settings.CompareCheckerSize;
+        _differenceKind = settings.DifferenceKind;
+        _differenceMap = settings.DifferenceMap;
+        _signedMap = settings.SignedMap;
+        _threshold = settings.DifferenceThreshold;
+        _mask = settings.DifferenceMask;
+        _showMetrics = settings.ShowMetrics;
+        _pixelValues = settings.PixelValues;
         _files.AddRange(options.Files);
         _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE),
             (long)(options.CacheMb ?? settings.CacheMb) << 20, (long)(options.VramMb ?? settings.VramMb) << 20);
@@ -1031,6 +1038,7 @@ internal sealed unsafe partial class MainWindow
         LoadedImage? drawn = !comparing && _shown?.BestGpu != null ? _shown : null;
         if (comparing) RenderCompare();
         else if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display, ViewX, ViewY, ViewWidth, ViewHeight);
+        if (_captureView) CaptureView(); // the picture alone: before anything is drawn over it
         if (_thumbs != null) _thumbsUploaded += _thumbs.Upload();
         if (_ui != null)
         {
@@ -1120,10 +1128,28 @@ internal sealed unsafe partial class MainWindow
                     _intervals++;
                     _intervalMs += interval;
                     _intervalMaxMs = Math.Max(_intervalMaxMs, interval);
+                    if (interval > 30) LogLongInterval(interval, frameMs);
                 }
             }
         }
         _lastPresented = presented;
+    }
+
+    /// <summary>
+    /// A frame that came long after the one before it, in the middle of an interaction: where the
+    /// time went, for --perf-log. "frame" is from the start of drawing to Present returning; what
+    /// is left of the interval passed before drawing began.
+    /// </summary>
+    void LogLongInterval(double interval, double frameMs)
+    {
+        if (_options.PerfLog == null) return;
+        try
+        {
+            File.AppendAllText(_options.PerfLog, $"long_interval ms={interval:F1} cpu_ms={_lastFrameMs:F2} frame_ms={frameMs:F1} zoom={_view.Zoom:F2}\n");
+        }
+        catch (IOException)
+        {
+        }
     }
 
     /// <summary>One line per image the user went to, for the navigation benchmark.</summary>
@@ -1289,15 +1315,18 @@ internal sealed unsafe partial class MainWindow
         Invalidate(); // the readout under the cursor changed
     }
 
-    /// <summary>The left button went down over the image: a drag pans it (or, when comparing, may move the divider).</summary>
-    void OnLeftDown(int x, int y)
+    /// <summary>
+    /// The left button went down over the image: a drag pans it. When comparing it may instead
+    /// move the divider, or, with Shift held or after R, draw the region the numbers are taken over.
+    /// </summary>
+    void OnLeftDown(int x, int y, bool shift)
     {
         _panning = true;
         _mouseX = x;
         _mouseY = y;
         PInvoke.SetCapture(_hwnd);
         if (!Comparing) return;
-        CompareMouseDown(x, y);
+        CompareMouseDown(x, y, shift);
         Invalidate();
     }
 
@@ -1305,6 +1334,7 @@ internal sealed unsafe partial class MainWindow
     {
         _panning = false;
         _dragDivider = false;
+        EndRegion();
         _dragItem = -1;
         PInvoke.ReleaseCapture();
     }
@@ -1375,7 +1405,19 @@ internal sealed unsafe partial class MainWindow
                 break;
             case VIRTUAL_KEY.VK_C when control:
                 if (shift) CopyPath();
+                else if (Comparing) CopyView(); // a comparison is what its panes show; one image of it is copied through the menu
                 else CopyImage();
+                break;
+            case VIRTUAL_KEY.VK_S when control:
+                if (shift) SaveMetrics();
+                else SaveView();
+                break;
+            case VIRTUAL_KEY.VK_D when control:
+                SaveDifferenceValues();
+                break;
+            case VIRTUAL_KEY.VK_V:
+                _pixelValues = !_pixelValues;
+                Notice(_pixelValues ? "Pixel values are written into the pixels once they are large enough: zoom in." : "Pixel values off.");
                 break;
             case VIRTUAL_KEY.VK_C:
                 ToggleCompare();
@@ -1564,16 +1606,19 @@ internal sealed unsafe partial class MainWindow
             case WM_APP_PICKED:
                 OnPicked();
                 return default;
+            case WM_APP_RUN:
+                OnUiQueue();
+                return default;
             case WM_APP_TEST_OPEN_DIALOG:
                 OpenWithDialog(folder: wParam.Value != 0);
                 return default;
             case WM_APP_TEST_MOUSE:
             {
                 // Routed as the real messages are: to a panel if the mouse is over one, else to the image.
-                int x = LowWord(lParam.Value), y = HighWord(lParam.Value), button = (int)wParam.Value;
+                int x = LowWord(lParam.Value), y = HighWord(lParam.Value), button = (int)wParam.Value & 3;
                 _ui?.TestMouse(x, y, button);
                 if (_ui is { WantsMouse: true } && !_panning) _mouseX = _mouseY = -1;
-                else if (button == 1) OnLeftDown(x, y);
+                else if (button == 1) OnLeftDown(x, y, shift: ((int)wParam.Value & 4) != 0);
                 else if (button == 2) OnLeftUp();
                 else OnMouseMove(x, y);
                 Invalidate();
@@ -1639,7 +1684,7 @@ internal sealed unsafe partial class MainWindow
                 OnMouseMove(LowWord(lParam.Value), HighWord(lParam.Value));
                 return default;
             case PInvoke.WM_LBUTTONDOWN:
-                OnLeftDown(LowWord(lParam.Value), HighWord(lParam.Value));
+                OnLeftDown(LowWord(lParam.Value), HighWord(lParam.Value), shift: (wParam.Value & 0x0004) != 0); // MK_SHIFT
                 return default;
             case PInvoke.WM_LBUTTONUP:
                 OnLeftUp();
@@ -1692,6 +1737,7 @@ internal sealed unsafe partial class MainWindow
             case PInvoke.WM_DESTROY:
                 WriteStatistics();
                 SaveSettings();
+                _metricsCancel?.Cancel();
                 StopWatching();
                 _thumbs?.Dispose();
                 _pendingPack?.Dispose();

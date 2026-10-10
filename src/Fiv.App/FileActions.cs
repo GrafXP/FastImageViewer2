@@ -94,6 +94,75 @@ internal static unsafe class FileActions
     }
 
     /// <summary>
+    /// Shows the system's Save dialog on a thread of its own, as <see cref="PickAsync"/> does, and
+    /// calls <paramref name="done"/> there with the path chosen, or null if cancelled. Each type
+    /// is a name and an extension ("PNG image", "png"); the first is the one suggested.
+    /// </summary>
+    public static void SaveAsync(HWND owner, string suggestedName, (string Name, string Extension)[] types, Action<string?> done)
+    {
+        var thread = new Thread(() =>
+        {
+            string? path = null;
+            try
+            {
+                path = Save(owner, suggestedName, types);
+            }
+            catch (Exception e)
+            {
+                CrashLog.Write(e);
+            }
+            done(path);
+        }) { IsBackground = true, Name = "fiv dialog" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+    }
+
+    static string? Save(HWND owner, string suggestedName, (string Name, string Extension)[] types)
+    {
+        PInvoke.CoInitializeEx(null, COINIT.COINIT_APARTMENTTHREADED | COINIT.COINIT_DISABLE_OLE1DDE);
+        var clsid = new Guid("C0B4E2F3-BA21-4773-8DBA-335EC946EB8B"); // CLSID_FileSaveDialog
+        Guid iid = IFileSaveDialog.IID_Guid;
+        IFileSaveDialog* dialog = null;
+        IShellItem* item = null;
+        // The dialog reads the type list while it is shown: the strings stay pinned until it has closed.
+        var pins = new List<System.Runtime.InteropServices.GCHandle>();
+        try
+        {
+            if (PInvoke.CoCreateInstance(&clsid, null, CLSCTX.CLSCTX_INPROC_SERVER, &iid, (void**)&dialog).Failed) return null;
+            var specs = stackalloc Windows.Win32.UI.Shell.Common.COMDLG_FILTERSPEC[types.Length];
+            for (int i = 0; i < types.Length; i++)
+            {
+                char* Pin(string text)
+                {
+                    var handle = System.Runtime.InteropServices.GCHandle.Alloc(text, System.Runtime.InteropServices.GCHandleType.Pinned);
+                    pins.Add(handle);
+                    return (char*)handle.AddrOfPinnedObject();
+                }
+                specs[i] = new Windows.Win32.UI.Shell.Common.COMDLG_FILTERSPEC { pszName = Pin(types[i].Name), pszSpec = Pin("*." + types[i].Extension) };
+            }
+            dialog->SetFileTypes((uint)types.Length, specs);
+            FILEOPENDIALOGOPTIONS options;
+            dialog->GetOptions(&options);
+            dialog->SetOptions(options | FILEOPENDIALOGOPTIONS.FOS_FORCEFILESYSTEM | FILEOPENDIALOGOPTIONS.FOS_OVERWRITEPROMPT | FILEOPENDIALOGOPTIONS.FOS_PATHMUSTEXIST);
+            fixed (char* name = suggestedName) dialog->SetFileName(name);
+            fixed (char* extension = types[0].Extension) dialog->SetDefaultExtension(extension);
+            if (dialog->Show(owner).Failed) return null; // cancelled
+            if (dialog->GetResult(&item).Failed) return null;
+            PWSTR path;
+            if (item->GetDisplayName(SIGDN.SIGDN_FILESYSPATH, &path).Failed) return null;
+            string result = new(path.Value);
+            PInvoke.CoTaskMemFree(path.Value);
+            return result;
+        }
+        finally
+        {
+            if (item != null) item->Release();
+            if (dialog != null) dialog->Release();
+            foreach (var pin in pins) pin.Free();
+        }
+    }
+
+    /// <summary>
     /// Moves files to the Recycle Bin. True if the shell reports that all of them went. Where
     /// there is no bin (some removable and network drives), the shell asks before deleting for
     /// good: the viewer never destroys a file silently.

@@ -1,8 +1,8 @@
 # FastImageViewer2 — Plan
 
-Status: **M0, M1 and M2 done and measured; M3 and M4 built and measured, each with untested items** (see section 9); **M5 is next.** What each milestone left open is listed
+Status: **M0, M1 and M2 done and measured; M3, M4 and M5 built and measured, each with untested items** (see section 9); **M6 is next.** What each milestone left open is listed
 under it in section 9. Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
-Measured numbers: section 2.1 (M0), 2.2 (M1), 2.3 (M2) and 2.4 (M4, comparing). Build and keys: `README.md`.
+Measured numbers: section 2.1 (M0), 2.2 (M1), 2.3 (M2), 2.4 (M4, comparing) and 2.5 (M5, difference and metrics). Build and keys: `README.md`.
 
 FastImageViewer2 is a new image viewer for Windows. It takes its feature ideas from
 FastImageViewer (`../FastImageViewer`) but shares no code and no technology with it.
@@ -265,6 +265,61 @@ the pool: two 24 MP images are on screen in full 12–22 ms after the time one t
 2.2 and 2.3 beyond a regression run (cold start 96 ms to first pixels, 274 ms to the full image;
 39 of 39 images at 30 per second with the arrow key held): unchanged.
 
+### 2.5 Measured in M5: difference and metrics
+
+Same machine, corpus and window as 2.4; the machine was in use. Reproduce with `fivbench compare`
+(the viewer) and `fivbench metrics` (the computation alone).
+
+**On screen.** The pair is `scene_1_original.jpg` and `scene_3_changed.jpg`, 24 MP each. The rows
+of 2.4 were measured again in the same run: every refresh got a frame as before, at 0.15 to
+0.26 ms of CPU per frame (0.12 to 0.21 in 2.4); the times to load came out 0 to 60 ms longer
+than in 2.4, and differed by as much between four runs on a machine that was in use.
+
+| Mode | All in full on screen | Frames in 2 s | Between frames, mean / longest | CPU per frame, mean / longest |
+|---|---|---|---|---|
+| difference | 323 ms | 295 | 6.95 / 11.4 ms | 0.19 / 0.54 ms |
+| difference, zoomed in, values written into the pixels | 312 ms | 295 | 6.92 / 11.3 ms | 0.81 / 2.48 ms |
+| structural similarity (heat map) | 359 ms | 295 | 6.95 / 11.3 ms | 0.17 / 0.58 ms |
+
+The similarity map is computed after the two images are there: it was on screen 1,029 ms after
+the start of the process, 670 ms after the images. Until then the pane shows the first image.
+Idle in the difference view with the metrics panel open: no CPU time in five of six samples of
+5 s, 16 ms in the sixth. Working set 290 MB in the difference view, 391 MB in the similarity
+view (the map is 96 MB of float values; its texture with mip levels is 128 MB of video memory,
+computed, not measured).
+
+**The numbers**, for two images of 24 MP on all 12 logical cores (median of 5, `fivbench metrics`):
+
+| Pair | Error metrics and histogram | With structural similarity | With its map as well |
+|---|---|---|---|
+| 8-bit colour JPEGs | 180 ms | 691 ms | 708 ms |
+| 16-bit grey PNG against float TIFF | 87 ms | 220 ms | 236 ms |
+
+In the viewer the same work took 190 to 240 ms for the error numbers and 490 to 550 ms more for
+the similarity, over seven runs; the error numbers are shown as soon as they are there, the
+similarity when it follows. A region of 1,282 x 940 pixels:
+13 ms and 38 ms. A half-size image scaled to lie over the original (blended, two passes for the
+histogram): 583 ms and 629 ms.
+
+**Saving** the 24 MP pair at full resolution (rendering on all cores, then writing the file; one run):
+
+| File | Render | Write | Size |
+|---|---|---|---|
+| difference in colours, PNG | 157 ms | 223 ms | 1.1 MB |
+| blend, PNG | 392 ms | 912 ms | 48.8 MB |
+| difference values, 32-bit float TIFF | 303 ms | 35 ms | 96.0 MB |
+
+**Against the budgets of section 2:**
+
+| Budget | Result |
+|---|---|
+| Pan / zoom, any compare mode: refresh rate, < 2 ms CPU per frame | every refresh got a frame in both new modes; **0.17–0.19 ms** of CPU per frame. With the values written into the pixels: every refresh, 0.81 ms on average, **2.5 ms in the longest frame — over the budget there** |
+| Idle 0 % CPU | none measurable — met |
+
+Regression run of the earlier budgets: cold start 95 ms to first pixels, 278 ms to the full image;
+39 of 39 images at 30 per second with the arrow key held; switching between compared images
+1.3 ms to `Present`: unchanged.
+
 ## 3. Technology
 
 ### 3.1 Language: C#, C++, Rust or Go?
@@ -467,6 +522,33 @@ mipmapped filtering when zoomed out, optional bicubic.
   (2 × 16 bytes per pixel of the view: about 90 MB at 2160×1185).
 - **One set of display controls** (`display.hlsli`: window, gamma, exposure, channel) is included
   by both shaders, so every pane and every mode shows the same values the same way.
+
+**As built in M5:**
+
+- **Difference and similarity are two more modes of the combine pass.** For the difference,
+  `combine.hlsl` takes the second image less the first from the two float targets, per screen
+  pixel: of one channel, of luma, or, for colour, of the channel that differs most, so that a
+  change in one channel is never averaged away. Kind (absolute, signed, squared, relative) and
+  gain turn it into a position on a colour map, which is a texture of 256 entries. The gain is
+  relative to the span between the display's black and white: at gain 1 a difference of the
+  whole range reaches the end of the map.
+- **One definition, two users.** `Fiv.Comparing` (`DifferenceMath`, `Colormaps`, `CompareExport`)
+  holds the same formulas and the same colour tables on the CPU. The saved files are computed
+  there, from the full-resolution pixels, and come out in the colours that were on screen.
+- **The numbers never come from the screen.** `CompareMetrics` reads both images row by row in
+  canvas coordinates (`CompareSource`: any layout, any orientation; exactly one stored pixel per
+  canvas pixel where the placement moves whole pixels, the four nearest blended where it
+  scales), in bands on all cores, on a worker. Differences are in the units of the files when
+  both have the same depth, on a scale of 0..1 when they differ. For 8- and 16-bit pairs the
+  histogram counts every whole difference, so "share over the threshold" is exact and follows
+  the threshold without recomputing. Structural similarity is the authors' own: 11 x 11 Gaussian
+  window, mean over where it fits, worked in tiles and in double precision (in 32-bit float a
+  flat area near black or white was wrong in the fourth decimal place).
+- **The similarity map** is a float image like any other: mip levels, a texture, drawn into the
+  first intermediate target under the canvas transform, and coloured by the combine pass.
+- **On screen, a zoomed-out difference is the difference of averaged pixels.** Each image is
+  filtered down to the screen before the two are subtracted, so differences of single pixels
+  fade when many pixels share one screen pixel. At 100 % and above it is exact.
 
 ## 8. Feature inventory of FastImageViewer → where it lands
 
@@ -710,6 +792,90 @@ is shown when the two float targets cannot be created; windows on a display of a
   threshold, SSIM, per channel; difference histogram; SSIM heat-map view.
 - Pixel inspector: per-pixel values of A, B and Δ drawn in the cells at high zoom.
 - Export: difference / composite at full resolution, view to clipboard, metrics to CSV / JSON.
+
+*State 2026-10-10: built and measured (section 2.5); every item above is in, some paths untested.*
+The plan gave M5 no exit criteria of its own. Of the budgets it touches, zoom and pan at the
+refresh rate and idle are met; the 2 ms of CPU per frame are exceeded in the longest frame
+(2.5 ms) while values are written into the pixels.
+
+Built: two more compare modes, **difference** (`E`: absolute, signed, squared, relative to the
+first image; gain with Up/Down or set from the largest difference; the channel of `H`, colour
+meaning the channel that differs most; nine colour maps, `G`, with a choice of its own for the
+signed kind; a colour bar in the units of the files; `W` marks the pixels over a threshold on
+the dimmed first image) and **SSIM** (a heat map of structural similarity, shown as 1 less it,
+with gain). The difference and the similarity under the cursor are in the pane's readout. A
+**metrics panel** (`N`): MAE, MSE, PSNR, largest error, share of pixels over the threshold and
+SSIM for red, green, blue, alpha where an image is not opaque, luma, and all; a histogram of the
+differences; for the whole area both images cover or for a **region** dragged on the image (`R`,
+or Shift+drag). **Pixel values** (`V`): the values of an image, or of two images and their
+difference, written into the pixels once these are large enough, with a grid between them; also
+for one image outside a comparison. **Saving**: the split, blend, checkerboard, difference or
+SSIM view at the full resolution of the canvas as PNG (`Ctrl+S`), the difference itself as
+32-bit float TIFF (`Ctrl+D`), the numbers as CSV or JSON (`Ctrl+Shift+S`), and what the panes
+show to the clipboard (`Ctrl+C`). The settings of the difference view are kept in
+`settings.json`; `--compare-mode diff` and `ssim`.
+Under it: what section 7 lists for M5; a PNG and a float-TIFF writer; 70 new unit tests (colour
+maps, the difference definitions, reading rows through placement and orientation, every metric
+against numbers worked out by hand, structural similarity against a plain implementation of its
+definition, the saved pictures pixel by pixel, the writers through the Windows decoders, CSV and
+JSON; 237 in all); `fivbench metrics`, and three more rows in `fivbench compare`.
+
+Checked in the running viewer, from pictures of its window: the difference view in all four
+kinds with five of the colour maps, gain by key and by "Auto", the colour bar and its labels;
+the mask at two thresholds and the threshold keys; the similarity heat map with its readout;
+the metrics panel on a pair that differs everywhere, one that differs by compression, an
+identical pair of a 16-bit PNG and a float TIFF (infinite PSNR, units "normalised"), and a
+half-size image scaled to fit; its numbers against `fivbench metrics`; a region dragged after
+`R` and the whole image again; a set of three with the pair changed by key; pixel values of a
+pair in the difference and split views (all nine numbers at 96 screen pixels per image pixel,
+the differences alone at 67, nothing at 39), of one image of a set, and of a single 16-bit
+image; saving, all through `--export-dir`: the SSIM view (6000 x 4000, looked at), the split
+view (two of its pixels read back) and the blend view (written), the float TIFF (its size), CSV
+and JSON (read), and the copied view (looked at); the menu.
+Found on the way: structural similarity in 32-bit float was off by up to 3 in the fourth decimal
+place on flat areas (now double precision); a "stutter" of 60 to 80 ms with pixel values on was
+the benchmark counting the frame in which the notice of `V` times out, not the viewer (the
+benchmark now waits for it; `--perf-log` records frames that come late, with where the time went).
+
+**Changed from before, to be confirmed:**
+
+- `Ctrl+C` while comparing copies what the panes show. One image of the set is copied through
+  the menu ("Copy image").
+- Zoom goes to 25600 % instead of 6400 %: a pixel has to be about 95 screen pixels wide to hold
+  the three values of two 8-bit images and their differences, about 135 for 16-bit images, and
+  half as much again on a display scaled to 150 %.
+- `M` goes through eight modes; `E` goes straight to the difference.
+
+**Written but not tested:** the Save dialog itself (every save was tested with `--export-dir`,
+which skips it) and choosing JSON in it; the real clipboard (in test runs the copied view goes
+to a file, so that the clipboard of whoever is working is left alone); Shift+drag for a region;
+the entries under "Copy and save" in the menu; saving the difference view and the checkerboard
+from the viewer (both are unit-tested and the difference was rendered by `fivbench metrics`);
+moving or docking the metrics panel; pixel values of rotated, float, 16-bit colour and
+transparent images; the alpha row of the metrics in the viewer; "Auto" before the numbers are
+there; changing the pair while its numbers are being computed; what is shown when the numbers
+or the map cannot be computed (out of memory); a difference of more than 4 GB, which TIFF
+cannot hold; a display of another DPI.
+
+**Not done:**
+
+- Zoomed out, the difference view shows the difference of averaged pixels (section 7). The
+  numbers and the saved files do not have this limit.
+- For float pairs, pairs of different depth and scaled pairs the histogram has 4,095 bins
+  between the largest negative and positive difference: the share over the threshold is good
+  to a bin, not exact.
+- PSNR of float data takes the span of the values met in the region as its peak. There is no
+  setting for another one.
+- The numbers are of the two images on show. All pairs of a set, and one image against a folder,
+  are M7.
+- One region, a rectangle, not kept between runs.
+- Pixel values are written in the UI's text size only: an 8-bit colour pair shows all nine
+  numbers from about 95 screen pixels per image pixel, its differences alone from about 50.
+- Side by side and grid are not saved as pictures, and the colour bar is in neither the saved
+  nor the copied view.
+- The UI font has no Greek: the readout says "diff", not Δ.
+- While the similarity view is in use its map stays in memory (for 24 MP: 96 MB, and 128 MB of
+  video memory) until the pair changes or the comparison ends.
 
 **M6 — Compare III: alignment**
 - Manual: drag, arrow-key nudge (1 px / 0.1 px), rotate, scale, numeric entry, reset.

@@ -8,7 +8,9 @@ namespace Fiv.App;
 /// </summary>
 internal struct ViewState
 {
-    public const double MinZoom = 1.0 / 64, MaxZoom = 64;
+    // Up to 256 screen pixels per image pixel: at that size a pixel holds the values of two
+    // images and their difference in every channel, written out (see DrawPixelValues).
+    public const double MinZoom = 1.0 / 64, MaxZoom = 256;
 
     public double Zoom;
     public double CenterX, CenterY;
