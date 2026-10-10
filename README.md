@@ -29,8 +29,8 @@ Opening one file also lists its folder, so next and previous walk through it. Th
 watched: files added, removed or changed show up by themselves. Starting the viewer again while
 it runs hands the files to the running window.
 
-Two to sixteen files opened together, dropped on the window, or selected in a panel and sent
-off with `C`, are compared: side by side, in a grid, one at a time in the same place, or two of
+Two to sixteen files opened together, dropped on the window, or selected in a panel are
+compared: side by side, in a grid, one at a time in the same place, or two of
 them in one pane, split by a divider, blended, or as a checkerboard. Zoom, position and the
 display controls are the same for all of them, and each pane shows the position and values of
 its own pixel under the cursor.
@@ -61,11 +61,11 @@ can be saved, on the pixel grid of the image it was aligned to.
 | `S`, `Shift+S` | sort the folder by name, date, size, type in turn; reverse the order |
 | `B`, `T`, `Tab` | folder panel (thumbnails or list, filter, subfolders), filmstrip, hide or show both |
 | `Up` / `Down` | one row up or down in the thumbnail grid |
-| Click, `Ctrl`+click, `Shift`+click, `Ctrl+A`, `Ctrl+I` | select in the panels |
+| Click, `Ctrl`+click, `Shift`+click, `Ctrl+A`, `Ctrl+I` | select in the panels; two to sixteen selected images are compared at once |
 | `Ctrl+O`, `Ctrl+Shift+O` | open files, open a folder |
 | `Ctrl+C`, `Ctrl+Shift+C` | copy the image, copy its path |
 | `F2`, `Del` | rename, move to the Recycle Bin (asks first) |
-| Right click | menu: recent files and folders, file actions, panels, settings |
+| Right click | menu: recent files and folders, file actions, panels, labels, settings, file types |
 | `F1` | list of keys |
 | Mouse wheel, `+` / `-` | zoom at the cursor / at the centre |
 | Left drag | pan |
@@ -87,6 +87,8 @@ Comparing:
 |---|---|
 | `C` | compare the selected images, or the image on show with the next one; again to stop |
 | Drop 2 to 16 files | compare them; with `Ctrl` held, add what is dropped to the comparison |
+| Select 2 to 16 images in a panel, or open them from Explorer | compare them: two side by side, more in the grid; with one left selected, it is shown on its own |
+| Right click the selection in a panel | file actions for all the selected images (`Del`, `F2` and the image's own menu act on the active one) |
 | `M`, `Shift+M` | mode: single, side by side, grid, split, blend, checkerboard, difference, SSIM |
 | `1` … `9` | go to that image; held down, show it only until the key is released |
 | `Left` / `Right`, `Home` / `End` | previous / next, first / last image of the set |
@@ -125,15 +127,35 @@ Aligning the second image of the pair to the first:
 | `A` or `Esc` | leave align mode; the image stays where it was put |
 
 The status bar shows position in the folder, file, size, zoom, and the coordinates and stored
-values of the pixel under the cursor (16-bit and float values as they are in the file).
+values of the pixel under the cursor (16-bit and float values as they are in the file). The
+name and size are also written into the top left corner of the image, on its own as in every
+pane of a comparison; "Labels" in the menu and in the compare panel switches that off.
 
 Formats: JPEG through libjpeg-turbo; PNG, TIFF, BMP, GIF, ICO and whatever else Windows has a
 codec for (WebP, HEIC, AVIF, camera raw) through WIC.
 
+Opening images from Explorer: the viewer is not installed, `publish\` can be copied anywhere.
+"File types..." in the menu registers it with Windows for the endings ticked there, for the
+current user: it then appears under "Open with" and among the default apps of the Windows
+settings. Which program a double click starts remains the user's choice, which Windows 10 and
+11 keep programs from changing: Windows asks the next time such a file is opened, and a button
+in the dialog opens the settings page to choose at once. The dialog shows for every ending which
+program opens it now. "Remove all" takes the viewer out of the registry and puts back what the
+endings were set to before: do that before deleting the folder. After moving the folder, Apply
+again.
+
+Several images selected in Explorer and opened together are compared, two side by side and
+more in the grid, in the order of their names. Explorer starts the viewer once for each file
+of a selection, and each start hands its file to the viewer already running; files that arrive
+within half a second of each other, and within a second and a half once there are two, are
+taken as one selection.
+
 Options: `--cache-mb <n>` and `--vram-mb <n>` set the budgets of the image cache (default 4096
 and 2048); `--no-prefetch` loads only the image asked for; `--new-instance` does not hand over
 to a running viewer; `--compare-mode <single|side|grid|split|blend|checker|diff|ssim>` starts a
-comparison in that mode instead of the one used last.
+comparison in that mode instead of the one used last. `--register <jpg,png,...|common|all>`
+does what "File types..." does, for exactly those endings and without a window, and
+`--unregister` takes it all back; the exit code is 0 if it was done.
 
 ## Measure
 

@@ -40,10 +40,12 @@ internal sealed unsafe partial class MainWindow
 
     /// <summary>
     /// Sent by tests: the mouse is at this client position (x in the low word of lParam, y in the
-    /// high word); wParam 1: and its left button goes down, 2: up; 4 added: with Shift held. Posted mouse messages do not
-    /// do: with the real mouse elsewhere, Windows follows a WM_MOUSEMOVE with WM_MOUSELEAVE.
+    /// high word); wParam 1: and its left button goes down, 2: up; 4 added: with Shift held, 8 added: with Ctrl held
+    /// (Ctrl for clicks in the panels only). Posted mouse messages do not do: with the real mouse elsewhere, Windows
+    /// follows a WM_MOUSEMOVE with WM_MOUSELEAVE.
     /// </summary>
     const uint WM_APP_TEST_MOUSE = PInvoke.WM_APP + 22;
+    bool _testShift, _testControl; // held, as far as a click in a panel is concerned, while a test's button is down
 
     /// <summary>
     /// Sent by tests: a key with its modifiers stated (wParam: virtual key; lParam: 1 Shift, 2 Ctrl,
@@ -251,6 +253,10 @@ internal sealed unsafe partial class MainWindow
         if (_files.Count == 0) EnsureVisible();
         else PInvoke.SetTimer(_hwnd, ShowTimerId, ShowTimeoutMs, null);
 
+        // The file this start was given may be the first of several opened together: the others
+        // are handed over by starts that came later, and are waiting for this loop to take them.
+        if (_files.Count == 1 && !_options.NoGather) _together.Add(_files[0], Environment.TickCount64);
+
         MSG message;
         while (PInvoke.GetMessage(&message, default, 0, 0).Value > 0)
         {
@@ -421,8 +427,9 @@ internal sealed unsafe partial class MainWindow
     /// Opens what was dropped, picked, or handed over by another process: a folder, one file
     /// (and with it its folder), or several files, which are compared. With
     /// <paramref name="addToComparison"/> the files join the comparison instead of replacing what is shown.
+    /// Without <paramref name="keepFolder"/> the files are a list of their own even if the folder on show has them all.
     /// </summary>
-    void Open(IEnumerable<string> files, bool addToComparison = false)
+    void Open(IEnumerable<string> files, bool addToComparison = false, bool keepFolder = true)
     {
         var list = files.ToList();
         if (list.Count == 0) return;
@@ -440,7 +447,7 @@ internal sealed unsafe partial class MainWindow
         bool compare = ComparedWhenOpened(list.Count);
 
         // Files of the folder already indexed: keep the index (and drop a filter that hides one of them).
-        if ((list.Count == 1 || compare) && _folderAll is { } all && AllListed(list, all))
+        if (keepFolder && (list.Count == 1 || compare) && _folderAll is { } all && AllListed(list, all))
         {
             if (_folder == null || !AllListed(list, _folder))
             {
@@ -472,6 +479,41 @@ internal sealed unsafe partial class MainWindow
                 if (!InFolder(path, folder.Directory) || folder.Find(System.IO.Path.GetFileName(path.AsSpan())) < 0) return false;
             return true;
         }
+    }
+
+    readonly Fiv.Comparing.OpenedTogether _together = new();
+    bool _togetherKeepsFolder;
+
+    /// <summary>
+    /// Opens what another start of the viewer handed over. One file replaces what is shown, as
+    /// any file opened does; the files that follow it closely were opened with it, as a
+    /// selection in Explorer is, and all of them are compared: two side by side, more in the grid.
+    /// </summary>
+    void OpenForwarded(string[] files)
+    {
+        if (files.Length != 1 || _options.NoGather)
+        {
+            _together.Clear();
+            Open(files);
+            return;
+        }
+        if (Directory.Exists(files[0]))
+        {
+            _together.Clear();
+            OpenFolder(files[0]);
+            return;
+        }
+        if (!_together.Add(files[0], Environment.TickCount64)) return; // opened twice
+        if (_together.Files.Count == 1)
+        {
+            Open(files);
+            // Files of the folder on show stay in it; with any other folder, they are a list of their own,
+            // as files named together on a command line are, however far its listing has got meanwhile.
+            _togetherKeepsFolder = _folderAll != null;
+            return;
+        }
+        SetCompareMode(ModeForSeveral(_together.Files.Count));
+        Open(_together.Files, keepFolder: _togetherKeepsFolder);
     }
 
     /// <summary>Shows a folder: lists it, then its first image.</summary>
@@ -1390,6 +1432,7 @@ internal sealed unsafe partial class MainWindow
             case VIRTUAL_KEY.VK_ESCAPE:
                 if (_showKeys) _showKeys = false;
                 else if (_showSettings) _showSettings = false;
+                else if (_showFileTypes) _showFileTypes = false;
                 else if (_fullscreen) ToggleFullscreen();
                 else if (Comparing) StopCompare();
                 else PInvoke.PostMessage(_hwnd, PInvoke.WM_CLOSE, default, default);
@@ -1622,6 +1665,8 @@ internal sealed unsafe partial class MainWindow
             {
                 // Routed as the real messages are: to a panel if the mouse is over one, else to the image.
                 int x = LowWord(lParam.Value), y = HighWord(lParam.Value), button = (int)wParam.Value & 3;
+                if (button == 1) (_testShift, _testControl) = (((int)wParam.Value & 4) != 0, ((int)wParam.Value & 8) != 0);
+                else if (button == 2) _testShift = _testControl = false;
                 _ui?.TestMouse(x, y, button);
                 if (_ui is { WantsMouse: true } && !_panning) _mouseX = _mouseY = -1;
                 else if (button == 1) OnLeftDown(x, y, shift: ((int)wParam.Value & 4) != 0);
@@ -1728,6 +1773,10 @@ internal sealed unsafe partial class MainWindow
             case PInvoke.WM_KILLFOCUS:
                 _pick.ForgetPress(); // the release of a held number key goes to whoever has the keyboard now
                 break;
+            case PInvoke.WM_ACTIVATE:
+                // Back from the Windows settings, perhaps: which program opens what may have changed there.
+                if (_showFileTypes && (wParam.Value & 0xFFFF) != 0) LoadFileTypes(apply: null, tick: false);
+                break;
 
             case PInvoke.WM_DROPFILES:
                 OnDropFiles(new HDROP((void*)wParam.Value));
@@ -1735,7 +1784,7 @@ internal sealed unsafe partial class MainWindow
             case PInvoke.WM_COPYDATA:
                 if (SingleInstance.ReadForwarded(lParam) is { } forwarded)
                 {
-                    Open(forwarded);
+                    OpenForwarded(forwarded);
                     BringToFront();
                     return new LRESULT(1);
                 }

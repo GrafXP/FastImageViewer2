@@ -53,7 +53,8 @@ public static class OpenCommand
         {
             UseShellExecute = false,
             // No prefetch and no cache: every open in this benchmark has to read and decode its file.
-            ArgumentList = { images[0], "--instance", instance, "--no-activate", "--perf-log", log, "--no-prefetch", "--cache-mb", "0", "--vram-mb", "0", "--no-panels", "--profile", BenchProfile.Directory },
+            // No gathering either: the opens follow each other closely, and each is to replace the last, not to be compared with it.
+            ArgumentList = { images[0], "--instance", instance, "--no-activate", "--perf-log", log, "--no-prefetch", "--no-gather", "--cache-mb", "0", "--vram-mb", "0", "--no-panels", "--profile", BenchProfile.Directory },
         })!;
         try
         {

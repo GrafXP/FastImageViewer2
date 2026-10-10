@@ -35,9 +35,14 @@ internal sealed unsafe partial class MainWindow
     bool IsSelected(FolderIndex folder, int position) =>
         _selectionListing == folder.Listing && _selection.Contains(folder.ListingIndexAt(position));
 
-    /// <summary>A click on an item in a panel: plain selects and shows it, Ctrl adds or removes it, Shift selects the range from the last one.</summary>
+    /// <summary>
+    /// A click on an item in a panel: plain selects and shows it, Ctrl adds or removes it, Shift
+    /// selects the range from the last one. Several selected images are compared (see <see cref="CompareSelection"/>).
+    /// </summary>
     void ClickItem(FolderIndex folder, int position, bool control, bool shift)
     {
+        control |= _testControl;
+        shift |= _testShift;
         if (_selectionListing != folder.Listing)
         {
             _selection.Clear();
@@ -50,11 +55,13 @@ internal sealed unsafe partial class MainWindow
             if (!control) _selection.Clear();
             for (int i = Math.Min(_selectionAnchor, position); i <= Math.Max(_selectionAnchor, position); i++) _selection.Add(folder.ListingIndexAt(i));
             Navigate(position);
+            CompareSelection();
         }
         else if (control)
         {
             if (!_selection.Remove(item)) _selection.Add(item);
             _selectionAnchor = position;
+            CompareSelection();
         }
         else
         {
@@ -87,6 +94,7 @@ internal sealed unsafe partial class MainWindow
             if (!invert) _selection.Add(item);
             else if (!_selection.Remove(item)) _selection.Add(item);
         }
+        CompareSelection();
     }
 
     /// <summary>Writes text as null-terminated UTF-8 into the shared buffer at <paramref name="offset"/>; returns its length in bytes.</summary>

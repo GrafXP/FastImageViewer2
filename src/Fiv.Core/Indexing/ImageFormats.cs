@@ -5,7 +5,8 @@ public static class ImageFormats
 {
     /// <summary>
     /// Extensions without the dot, lower case. The camera raw and HEIF/AVIF ones decode only if
-    /// the matching Windows codec is installed.
+    /// the matching Windows codec is installed. <see cref="Fiv.Shell.FileAssociations.Types"/>
+    /// lists the same endings, for registering the viewer with Windows; a test holds the two together.
     /// </summary>
     public static readonly string[] Extensions =
     [

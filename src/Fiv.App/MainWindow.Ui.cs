@@ -92,11 +92,13 @@ internal sealed unsafe partial class MainWindow
         else
         {
             DrawSinglePixelValues();
+            DrawSingleLabel();
         }
         if (_showPerf) DrawPerfOverlay();
         if (_showDisplayPanel) DrawDisplayPanel();
         if (_showKeys) DrawKeys();
         if (_showSettings) DrawSettings();
+        if (_showFileTypes) DrawFileTypes();
         DrawMessage();
         DrawNotice();
         DrawViewMenu();
@@ -260,8 +262,8 @@ internal sealed unsafe partial class MainWindow
     void DrawPerfOverlay()
     {
         float scale = (float)_dpiScale;
-        // Below the name and readout that a comparison shows in this corner.
-        ImGui.SetNextWindowPos(new Vector2(ViewX + 10 * scale, ViewY + (Comparing ? 56 : 10) * scale));
+        // Below the name and readout that a comparison shows in this corner, or the name of an image on its own.
+        ImGui.SetNextWindowPos(new Vector2(ViewX + 10 * scale, ViewY + (Comparing ? 56 : _paneLabels && _shown != null ? 34 : 10) * scale));
         ImGui.SetNextWindowBgAlpha(0.8f);
         if (ImGui.Begin("perf"u8, PinnedWindow | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoInputs))
         {

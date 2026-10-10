@@ -184,8 +184,7 @@ internal sealed unsafe partial class MainWindow
         {
             if (_selectionListing == folder.Listing && _selection.Count > 1)
             {
-                for (int position = 0; position < folder.Count; position++)
-                    if (_selection.Contains(folder.ListingIndexAt(position))) files.Add((folder.PathAt(position), folder.SizeAt(position), folder.ModifiedAt(position)));
+                files = SelectedFiles(folder);
             }
             else if (folder.Count > 1 && _fileIndex >= 0 && _fileIndex < folder.Count)
             {
@@ -204,6 +203,48 @@ internal sealed unsafe partial class MainWindow
         }
         if (files.Count > MaxCompare) Notice($"Comparing the first {MaxCompare} of {files.Count} images.");
         StartCompare(files);
+    }
+
+    /// <summary>The selected files of the folder as the panels show it, in its order.</summary>
+    List<(string Path, long Size, long Modified)> SelectedFiles(FolderIndex folder)
+    {
+        var files = new List<(string Path, long Size, long Modified)>();
+        if (_selectionListing != folder.Listing) return files;
+        for (int position = 0; position < folder.Count; position++)
+            if (_selection.Contains(folder.ListingIndexAt(position))) files.Add((folder.PathAt(position), folder.SizeAt(position), folder.ModifiedAt(position)));
+        return files;
+    }
+
+    /// <summary>
+    /// The mode of a comparison that was not asked for as one: images selected in a panel, or
+    /// opened together from Explorer. Two side by side, more in the grid.
+    /// </summary>
+    CompareMode ModeForSeveral(int count) => _options.CompareMode ?? (count > 2 ? CompareMode.Grid : CompareMode.SideBySide);
+
+    /// <summary>
+    /// The selection in the panels was changed by hand (Ctrl or Shift and a click, select all,
+    /// invert). Two to sixteen selected images are compared at once; when one is left, it is
+    /// shown on its own. More than sixteen are a selection for the file actions, not a comparison.
+    /// </summary>
+    void CompareSelection()
+    {
+        if (_folder is not { } folder) return;
+        var files = SelectedFiles(folder);
+        if (ComparedWhenOpened(files.Count))
+        {
+            SetCompareMode(ModeForSeveral(files.Count));
+            StartCompare(files);
+        }
+        else if (Comparing)
+        {
+            if (files.Count == 1)
+            {
+                Navigate(folder.Find(Path.GetFileName(files[0].Path.AsSpan()))); // ends the comparison
+                return;
+            }
+            StopCompare();
+            if (files.Count > MaxCompare) Notice($"{files.Count} images are selected: up to {MaxCompare} are compared.");
+        }
     }
 
     /// <summary>Adds a file to the set; with no set yet, starts one with the image on show.</summary>
@@ -900,6 +941,19 @@ internal sealed unsafe partial class MainWindow
         if (item < 0 || item >= _compare.Count) return;
         if (_paneLabels && WriteLabel(item)) y += Plate(draw, x, y, fromRight: fromRight) + MathF.Round(2 * (float)_dpiScale);
         if (WriteReadout(item, numbered && !_paneLabels)) Plate(draw, x, y, fromRight: fromRight);
+    }
+
+    /// <summary>The name and size of an image shown on its own, in the corner where a pane of a comparison has them.</summary>
+    void DrawSingleLabel()
+    {
+        if (!_paneLabels || Comparing || _shown is not { } image) return;
+        ReadOnlySpan<char> name = Path.GetFileName(image.Path.AsSpan());
+        if (!(image.HasSize ? Utf8.TryWrite(_utf8, $"{name}   {image.UprightWidth:0} x {image.UprightHeight:0}\0", out _) : Utf8.TryWrite(_utf8, $"{name}\0", out _))) return;
+        float margin = MathF.Round(6 * (float)_dpiScale);
+        ImDrawListPtr draw = ImGui.GetBackgroundDrawList();
+        draw.PushClipRect(new Vector2(ViewX, ViewY), new Vector2(ViewX + ViewWidth, ViewY + ViewHeight), true);
+        Plate(draw, ViewX + margin, ViewY + margin);
+        draw.PopClipRect();
     }
 
     /// <summary>What a pane says while it has no picture: that it is loading, or why it cannot be shown.</summary>

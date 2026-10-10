@@ -14,7 +14,7 @@
 #       "dbl:x:y"             double click
 #       "rclick:x:y"          right click on the image, in client coordinates
 #       "ps:<command>"        run a PowerShell command (e.g. change files the viewer is watching)
-#       "clickw:x:y"          left click at a position in window pixels, as in an unscaled screenshot
+#       "clickw:x:y[:sc]"     left click at a position in window pixels, as in an unscaled screenshot; in a panel, with Shift ("s") and Ctrl ("c") if stated
 #       "type:text"           type characters into the focused text field
 param([string]$Exe, [string[]]$AppArgs, [string[]]$Steps, [string]$OutDir, [int]$Scale = 2)
 $ErrorActionPreference = 'Stop'
@@ -60,8 +60,9 @@ try {
                 $r = New-Object W+RECT; [void][W]::GetWindowRect($h, [ref]$r)
                 $o = New-Object W+POINT; $o.X = 0; $o.Y = 0; [void][W]::ClientToScreen($h, [ref]$o)
                 $cx = [int]$a[1] - ($o.X - $r.L); $cy = [int]$a[2] - ($o.Y - $r.T)
+                $down = 1; if ($a.Count -gt 3 -and $a[3] -match 's') { $down += 4 }; if ($a.Count -gt 3 -and $a[3] -match 'c') { $down += 8 }   # the button goes down with Shift, Ctrl held
                 [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
-                [void][W]::PostMessageW($h, 0x8016, [IntPtr]1, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]$down, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
                 [void][W]::PostMessageW($h, 0x8016, [IntPtr]2, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
             }
             'dragc' {

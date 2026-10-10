@@ -61,6 +61,8 @@ WHEEL_DELTA
 DragAcceptFiles
 DragQueryFileW
 DragFinish
+AssocQueryStringW
+SHChangeNotify
 
 // --- GDI (first frame before the GPU is up)
 StretchDIBits

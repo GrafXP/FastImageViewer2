@@ -93,15 +93,18 @@ internal sealed unsafe partial class MainWindow
     List<string> ActionPaths()
     {
         var paths = new List<string>();
-        if (Comparing)
+        FolderIndex? selected = _folder != null && _selectionListing == _folder.Listing && _selection.Count > 1 ? _folder : null;
+        if (Comparing && (selected == null || _menuPath == null))
         {
-            // The selection is what is being compared; an action means one image: the one whose menu is open, or the active one.
+            // While comparing, an action means one image: the active one, or the one whose menu is open. Only from the
+            // menu of the selection in a panel does it mean all that is selected: several selected images are compared
+            // by themselves, and would otherwise be out of reach as a group.
             paths.Add(_menuPath ?? _compare[_pick.Active].Path);
         }
-        else if (_folder != null && _selectionListing == _folder.Listing && _selection.Count > 1)
+        else if (selected != null)
         {
-            for (int position = 0; position < _folder.Count; position++)
-                if (_selection.Contains(_folder.ListingIndexAt(position))) paths.Add(_folder.PathAt(position));
+            for (int position = 0; position < selected.Count; position++)
+                if (_selection.Contains(selected.ListingIndexAt(position))) paths.Add(selected.PathAt(position));
         }
         else if (_menuPath != null)
         {
@@ -261,11 +264,13 @@ internal sealed unsafe partial class MainWindow
         if (ImGui.MenuItem("Filmstrip"u8, "T"u8, _showFilmstrip)) _showFilmstrip = !_showFilmstrip;
         if (ImGui.MenuItem("Display panel"u8, "D"u8, _showDisplayPanel)) _showDisplayPanel = !_showDisplayPanel;
         if (ImGui.MenuItem("Pixel values at high zoom"u8, "V"u8, _pixelValues)) _pixelValues = !_pixelValues;
+        if (ImGui.MenuItem("Labels"u8, default(ReadOnlySpan<byte>), _paneLabels)) _paneLabels = !_paneLabels;
         if (ImGui.MenuItem("Timing overlay"u8, "F12"u8, _showPerf)) _showPerf = !_showPerf;
         if (ImGui.MenuItem("Fullscreen"u8, "F11"u8, _fullscreen)) _deferred = ToggleFullscreen;
         ImGui.Separator();
         if (ImGui.MenuItem("Keys"u8, "F1"u8, _showKeys)) _showKeys = !_showKeys;
         if (ImGui.MenuItem("Settings..."u8, default(ReadOnlySpan<byte>), _showSettings)) _showSettings = !_showSettings;
+        if (ImGui.MenuItem("File types..."u8, default(ReadOnlySpan<byte>), _showFileTypes)) ToggleFileTypes();
         ImGui.EndPopup();
     }
 
