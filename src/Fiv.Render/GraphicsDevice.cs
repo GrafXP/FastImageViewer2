@@ -130,11 +130,18 @@ public sealed unsafe class GraphicsDevice : IDisposable
         Context->ClearRenderTargetView(target, color);
     }
 
-    /// <summary>Rebinds the back buffer; a flip-model present unbinds it.</summary>
+    /// <summary>Rebinds the back buffer; a flip-model present unbinds it, and so does drawing into another target.</summary>
     public void BindBackBuffer()
     {
         ID3D11RenderTargetView* target = _backBuffer;
         Context->OMSetRenderTargets(1, &target, (ID3D11DepthStencilView*)null);
+    }
+
+    /// <summary>Limits drawing to a rectangle of the bound target, which then is what clip space spans.</summary>
+    public void SetViewport(int x, int y, int width, int height)
+    {
+        D3D11_VIEWPORT viewport = new() { TopLeftX = x, TopLeftY = y, Width = width, Height = height, MaxDepth = 1 };
+        Context->RSSetViewports(1, &viewport);
     }
 
     public void Present(bool waitForVerticalBlank)

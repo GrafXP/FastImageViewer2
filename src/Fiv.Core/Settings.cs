@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Fiv.Comparing;
 using Fiv.Indexing;
 
 namespace Fiv;
@@ -12,6 +13,9 @@ namespace Fiv;
 public sealed class Settings
 {
     public const int MaxRecent = 20;
+
+    /// <summary>The range of the blink interval in milliseconds, and of the checkerboard's cell size in pixels.</summary>
+    public const int MinBlinkMs = 50, MaxBlinkMs = 5000, MinCheckerSize = 4, MaxCheckerSize = 512;
 
     // Window: position and size of the restored window in screen pixels; 0 size means "never saved".
     public int WindowX, WindowY, WindowWidth, WindowHeight;
@@ -30,6 +34,12 @@ public sealed class Settings
     public bool ExactPixels = true;
     public int CacheMb = 4096, VramMb = 2048, ThumbnailCacheMb = 2048;
     public List<string> RecentFiles = [], RecentFolders = [];
+
+    // Comparing: how the next comparison starts out.
+    public CompareMode CompareMode = CompareMode.SideBySide;
+    public SizeMatch CompareSizes = SizeMatch.TopLeft;
+    public bool CompareLinked = true, CompareCursor = true, CompareLabels = true, CompareSplitRows;
+    public int CompareBlinkMs = 500, CompareCheckerSize = 64;
 
     /// <summary>Moves an entry to the front of a recent list, case-insensitively, and trims the list.</summary>
     public static void Remember(List<string> list, string path)
@@ -84,6 +94,14 @@ public sealed class Settings
                     case "thumbnailCacheMb": settings.ThumbnailCacheMb = Math.Max(0, reader.GetInt32()); break;
                     case "recentFiles": ReadList(ref reader, settings.RecentFiles); break;
                     case "recentFolders": ReadList(ref reader, settings.RecentFolders); break;
+                    case "compareMode": settings.CompareMode = Enum.TryParse(reader.GetString(), true, out CompareMode mode) && Enum.IsDefined(mode) ? mode : CompareMode.SideBySide; break;
+                    case "compareSizes": settings.CompareSizes = Enum.TryParse(reader.GetString(), true, out SizeMatch sizes) && Enum.IsDefined(sizes) ? sizes : SizeMatch.TopLeft; break;
+                    case "compareLinked": settings.CompareLinked = reader.GetBoolean(); break;
+                    case "compareCursor": settings.CompareCursor = reader.GetBoolean(); break;
+                    case "compareLabels": settings.CompareLabels = reader.GetBoolean(); break;
+                    case "compareSplitRows": settings.CompareSplitRows = reader.GetBoolean(); break;
+                    case "compareBlinkMs": settings.CompareBlinkMs = Math.Clamp(reader.GetInt32(), MinBlinkMs, MaxBlinkMs); break;
+                    case "compareCheckerSize": settings.CompareCheckerSize = Math.Clamp(reader.GetInt32(), MinCheckerSize, MaxCheckerSize); break;
                     default: reader.Skip(); break; // a setting of a newer version: leave it
                 }
             }
@@ -150,6 +168,14 @@ public sealed class Settings
                 writer.WriteStartArray("recentFolders");
                 foreach (string folder in RecentFolders) writer.WriteStringValue(folder);
                 writer.WriteEndArray();
+                writer.WriteString("compareMode", CompareMode.ToString());
+                writer.WriteString("compareSizes", CompareSizes.ToString());
+                writer.WriteBoolean("compareLinked", CompareLinked);
+                writer.WriteBoolean("compareCursor", CompareCursor);
+                writer.WriteBoolean("compareLabels", CompareLabels);
+                writer.WriteBoolean("compareSplitRows", CompareSplitRows);
+                writer.WriteNumber("compareBlinkMs", CompareBlinkMs);
+                writer.WriteNumber("compareCheckerSize", CompareCheckerSize);
                 writer.WriteEndObject();
             }
             // Written whole or not at all: to a temporary file first, then renamed over the old one.

@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text.Unicode;
 using Fiv.Imaging;
 using Fiv.Indexing;
+using Fiv.Render;
 using Hexa.NET.ImGui;
 
 namespace Fiv.App;
@@ -81,6 +82,11 @@ internal sealed unsafe partial class MainWindow
         ImGuiDockNodePtr central = ImGuiP.DockBuilderGetCentralNode(dock);
         if (!central.IsNull) SetViewRect((int)central.Pos.X, (int)central.Pos.Y, (int)central.Size.X, (int)central.Size.Y);
 
+        if (Comparing)
+        {
+            DrawCompareOverlays();
+            if (_showComparePanel) DrawComparePanel();
+        }
         if (_showPerf) DrawPerfOverlay();
         if (_showDisplayPanel) DrawDisplayPanel();
         if (_showKeys) DrawKeys();
@@ -124,7 +130,15 @@ internal sealed unsafe partial class MainWindow
             else
             {
                 int n;
-                if (FileCount > 1 && _shownIndex >= 0 && Utf8.TryWrite(_utf8, $"{_shownIndex + 1}/{FileCount}", out n))
+                bool comparing = Comparing && _singleItem >= 0;
+                if (comparing)
+                {
+                    if (Utf8.TryWrite(_utf8, $"Comparing {_compare.Count}, {ModeName(_compareMode)}", out n)) Put(n);
+                    Separator();
+                    if (Utf8.TryWrite(_utf8, $"{_singleItem + 1}", out n)) Put(n);
+                    Separator();
+                }
+                else if (FileCount > 1 && _shownIndex >= 0 && Utf8.TryWrite(_utf8, $"{_shownIndex + 1}/{FileCount}", out n))
                 {
                     Put(n);
                     Separator();
@@ -136,11 +150,17 @@ internal sealed unsafe partial class MainWindow
                     double megapixels = (double)image.Width * image.Height / 1e6;
                     if (Utf8.TryWrite(_utf8, $"{image.UprightWidth:0} x {image.UprightHeight:0}   {megapixels:0.0} MP   {image.FileSize / 1048576.0:0.00} MB", out n)) Put(n);
                     Separator();
-                    if (Utf8.TryWrite(_utf8, $"{_view.Zoom * 100:0.#} %", out n)) Put(n);
+                    double zoom = comparing && _canvasWidth > 0 ? ZoomOf(_singleItem, image) : _view.Zoom;
+                    if (Utf8.TryWrite(_utf8, $"{zoom * 100:0.#} %", out n)) Put(n);
                     if (image.Layout is { } layout && layout != PixelLayout.Bgra8)
                     {
                         Separator();
                         if (Utf8.TryWrite(_utf8, $"{LayoutName(layout)}", out n)) Put(n);
+                    }
+                    if (_display.Channel != ChannelView.Color)
+                    {
+                        Separator();
+                        if (Utf8.TryWrite(_utf8, $"{ChannelName(_display.Channel)} only", out n)) Put(n);
                     }
                     if (TryGetCursorPixel(image, out int x, out int y, out PixelValue value))
                     {
@@ -183,17 +203,34 @@ internal sealed unsafe partial class MainWindow
         _ => "8-bit BGRA",
     };
 
-    void WriteValue(in PixelValue value)
+    static string ChannelName(ChannelView channel) => channel switch
+    {
+        ChannelView.Red => "red",
+        ChannelView.Green => "green",
+        ChannelView.Blue => "blue",
+        ChannelView.Alpha => "alpha",
+        ChannelView.Luma => "luma",
+        _ => "colour",
+    };
+
+    /// <summary>Writes a pixel's stored values as text; returns the number of bytes written.</summary>
+    static int FormatValue(in PixelValue value, Span<byte> to)
     {
         int n;
         bool ok = value.Layout switch
         {
-            PixelLayout.Bgra8 when value.A == 255 => Utf8.TryWrite(_utf8, $"R {value.R:0}  G {value.G:0}  B {value.B:0}", out n),
-            PixelLayout.Bgra8 or PixelLayout.Rgba16 => Utf8.TryWrite(_utf8, $"R {value.R:0}  G {value.G:0}  B {value.B:0}  A {value.A:0}", out n),
-            PixelLayout.GrayFloat => Utf8.TryWrite(_utf8, $"{value.R:G6}", out n),
-            _ => Utf8.TryWrite(_utf8, $"{value.R:0}", out n),
+            PixelLayout.Bgra8 when value.A == 255 => Utf8.TryWrite(to, $"R {value.R:0}  G {value.G:0}  B {value.B:0}", out n),
+            PixelLayout.Bgra8 or PixelLayout.Rgba16 => Utf8.TryWrite(to, $"R {value.R:0}  G {value.G:0}  B {value.B:0}  A {value.A:0}", out n),
+            PixelLayout.GrayFloat => Utf8.TryWrite(to, $"{value.R:G6}", out n),
+            _ => Utf8.TryWrite(to, $"{value.R:0}", out n),
         };
-        if (ok) Put(n);
+        return ok ? n : 0;
+    }
+
+    void WriteValue(in PixelValue value)
+    {
+        int n = FormatValue(value, _utf8);
+        if (n > 0) Put(n);
         if (value.FromPreview)
         {
             ImGui.SameLine();
@@ -204,6 +241,7 @@ internal sealed unsafe partial class MainWindow
     /// <summary>The pixel of the stored image under the mouse, if the mouse is over the image.</summary>
     bool TryGetCursorPixel(LoadedImage image, out int x, out int y, out PixelValue value)
     {
+        if (Comparing) return TryGetComparePixel(_singleItem, out x, out y, out value); // through the pane the mouse is in
         x = y = 0;
         value = default;
         if (_mouseX < ViewX || _mouseY < ViewY || _mouseX >= ViewX + ViewWidth || _mouseY >= ViewY + ViewHeight) return false;
@@ -216,7 +254,8 @@ internal sealed unsafe partial class MainWindow
     void DrawPerfOverlay()
     {
         float scale = (float)_dpiScale;
-        ImGui.SetNextWindowPos(new Vector2(ViewX + 10 * scale, ViewY + 10 * scale));
+        // Below the name and readout that a comparison shows in this corner.
+        ImGui.SetNextWindowPos(new Vector2(ViewX + 10 * scale, ViewY + (Comparing ? 56 : 10) * scale));
         ImGui.SetNextWindowBgAlpha(0.8f);
         if (ImGui.Begin("perf"u8, PinnedWindow | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoInputs))
         {
@@ -259,7 +298,8 @@ internal sealed unsafe partial class MainWindow
     {
         LoadedImage? image = _shown;
         float scale = (float)_dpiScale;
-        ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth - 10 * scale, ViewY + 10 * scale), ImGuiCond.Always, new Vector2(1, 0));
+        // In the bottom right corner: the top corners are where a comparison names its images.
+        ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth - 10 * scale, ViewY + ViewHeight - 10 * scale), ImGuiCond.Always, new Vector2(1, 1));
         ImGui.SetNextWindowBgAlpha(0.9f);
         if (ImGui.Begin("Display"u8, ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.AlwaysAutoResize |
             ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoNav))
@@ -282,17 +322,23 @@ internal sealed unsafe partial class MainWindow
             ImGui.PushItemWidth(260 * scale);
             bool changed = ImGui.SliderFloat("black"u8, ref low, rangeLow, rangeHigh);
             changed |= ImGui.SliderFloat("white"u8, ref high, rangeLow, rangeHigh);
-            changed |= ImGui.SliderFloat("gamma"u8, ref _display.Gamma, 0.2f, 5f);
-            ImGui.PopItemWidth();
             if (changed)
             {
                 _display.WindowLow = low / unit;
                 _display.WindowHigh = high / unit;
+                _windowTouched = true;
             }
+            ImGui.SliderFloat("gamma"u8, ref _display.Gamma, 0.2f, 5f);
+            ImGui.SliderFloat("exposure, stops"u8, ref _display.Exposure, -8f, 8f, "%+.2f"u8);
+            ImGui.PopItemWidth();
             if (ImGui.Button("Auto (min - max)"u8) && image != null)
             {
-                _display.WindowLow = image.ValueRange.Min;
-                _display.WindowHigh = image.ValueRange.Max;
+                // Of the image; of all of them when comparing, so that they stay shown alike.
+                (float min, float max) = image.ValueRange;
+                if (Comparing && CompareValueRange(out float setMin, out float setMax)) (min, max) = (setMin, setMax);
+                _display.WindowLow = min;
+                _display.WindowHigh = max;
+                _windowTouched = true;
             }
             ImGui.SameLine();
             if (ImGui.Button("Reset"u8))
@@ -300,6 +346,18 @@ internal sealed unsafe partial class MainWindow
                 _display.WindowLow = 0;
                 _display.WindowHigh = 1;
                 _display.Gamma = 1;
+                _display.Exposure = 0;
+                _display.Channel = ChannelView.Color;
+                _windowTouched = true;
+            }
+
+            // Which part of the pixels is shown (H goes through them).
+            for (ChannelView channel = ChannelView.Color; channel <= ChannelView.Luma; channel++)
+            {
+                if (channel != ChannelView.Color) ImGui.SameLine();
+                Utf8Of(ChannelName(channel));
+                fixed (byte* label = _utf8)
+                    if (ImGui.RadioButton(label, _display.Channel == channel)) _display.Channel = channel;
             }
             ImGui.Checkbox("Exact pixels when zoomed in (I)"u8, ref _display.Sharp);
             ImGui.Checkbox("Keep zoom and position across images (L)"u8, ref _keepView);
@@ -310,6 +368,7 @@ internal sealed unsafe partial class MainWindow
     /// <summary>Errors, and the hint in an empty window, centred over the view.</summary>
     void DrawMessage()
     {
+        if (Comparing) return; // each pane says for itself what is wrong with its image
         string? text = _shown?.Error ?? (_shown == null && FileCount == 0 ? "Drop images here" : null);
         if (text == null || !Utf8.TryWrite(_utf8, $"{text}", out int n)) return;
         ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth / 2f, ViewY + ViewHeight / 2f), ImGuiCond.Always, new Vector2(0.5f, 0.5f));

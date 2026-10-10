@@ -33,6 +33,7 @@ ReleaseCapture
 GetCursorPos
 ScreenToClient
 GetKeyState
+GetAsyncKeyState
 InvalidateRect
 ValidateRect
 BeginPaint

@@ -1,8 +1,8 @@
 # FastImageViewer2 — Plan
 
-Status: **M0, M1 and M2 done and measured; M3 built and measured, with untested items** (see M3 in section 9); **M4 is next.** What each milestone left open is listed
+Status: **M0, M1 and M2 done and measured; M3 and M4 built and measured, each with untested items** (see section 9); **M5 is next.** What each milestone left open is listed
 under it in section 9. Written 2026-10-09. Language decided: C# / .NET 10 Native AOT (section 3.1).
-Measured numbers: section 2.1 (M0), 2.2 (M1) and 2.3 (M2, the current state). Build and keys: `README.md`.
+Measured numbers: section 2.1 (M0), 2.2 (M1), 2.3 (M2) and 2.4 (M4, comparing). Build and keys: `README.md`.
 
 FastImageViewer2 is a new image viewer for Windows. It takes its feature ideas from
 FastImageViewer (`../FastImageViewer`) but shares no code and no technology with it.
@@ -221,7 +221,46 @@ ranged from 207 to 224 ms); nothing in them points at the new pipeline. Idle, sh
 | Folder of 10,000 listed and sorted ≤ 50 ms | **24 ms** (9–24) — met |
 | Folder of 100,000 ≤ 500 ms | **52 ms** — met |
 | Cold start first pixels ≤ 200 ms; warm ≤ 100 ms; full ≤ 300 ms | 100 ms; 94 ms; 160 ms — met (warm p90 is 102 ms) |
-| Idle 0 % CPU | 0.03 % of one core — met |
+| Idle 0 % CPU | 0.3 % of one core — met |
+
+### 2.4 Measured in M4: comparing
+
+Same machine and corpus (`corpus\compare`: one 24 MP scene in four versions); window of 2160×1185
+pixels on the 144 Hz monitor; the machine was in use. Reproduce with `fivbench compare`.
+
+"All in full" counts from just before the viewer's process is created to the first frame that
+has every image on show at full resolution (in the single view that is one image). Zoom and pan:
+2 s of scripted wheel and drag input, an event every 4 ms.
+
+| Mode | Images | All in full on screen | Frames in 2 s | Between frames, mean / longest | CPU per frame, mean / longest |
+|---|---|---|---|---|---|
+| one image, not comparing | 1 of 24 MP | 290 ms | 294 | 6.94 / 11.4 ms | 0.12 / 0.54 ms |
+| single | 2 of 24 MP | 273 ms | 294 | 6.94 / 11.4 ms | 0.14 / 0.50 ms |
+| side by side | 2 of 24 MP | 312 ms | 294 | 6.93 / 11.5 ms | 0.16 / 0.44 ms |
+| grid | 3 of 24 MP, 1 of 6 MP | 350 ms | 295 | 6.93 / 11.4 ms | 0.16 / 0.53 ms |
+| grid | 16 of 12 MP | 488 ms | 295 | 6.94 / 11.3 ms | 0.21 / 0.42 ms |
+| split | 2 of 24 MP | 302 ms | 294 | 6.93 / 11.3 ms | 0.14 / 0.42 ms |
+| blend | 2 of 24 MP | 302 ms | 294 | 6.94 / 11.3 ms | 0.14 / 0.62 ms |
+| checkerboard | 2 of 24 MP | 306 ms | 294 | 6.95 / 11.3 ms | 0.13 / 0.59 ms |
+
+Switching between two 24 MP images in the single view (20 switches, 300 ms apart): key to
+`Present` returned, median 1.6 ms, p90 2.7 ms, longest 3.5 ms. Idle with a blend of two 24 MP
+images on screen: 16 ms of CPU time in 10 s. With sixteen 12 MP images in the set, the cache
+held 732 MB of decoded pixels and 977 MB of textures.
+
+**Against the budgets of section 2:**
+
+| Budget | Result |
+|---|---|
+| Pan / zoom, any image size, any compare mode: refresh rate, < 2 ms CPU per frame | every refresh got a frame in every mode; **0.13–0.21 ms** of CPU per frame, longest 0.62 ms (1.4 ms in an earlier run) — met |
+| Next / previous, already loaded: ≤ 1 frame | switching between compared images: **1.6 ms** to `Present`, plus the wait for the refresh — met |
+| Idle 0 % CPU | 0.16 % of one core while comparing — met |
+
+A set costs little more to load than one image, because its images are decoded side by side on
+the pool: two 24 MP images are on screen in full 12–22 ms after the time one takes, sixteen
+12 MP images after half a second. Nothing here re-measures the open and navigation budgets of
+2.2 and 2.3 beyond a regression run (cold start 96 ms to first pixels, 274 ms to the full image;
+39 of 39 images at 30 per second with the arrow key held): unchanged.
 
 ## 3. Technology
 
@@ -409,6 +448,23 @@ from the full-resolution native pixel values**, never from the zoomed display.
 Sampling: exact pixels when zoomed in (with optional pixel grid and per-pixel value labels),
 mipmapped filtering when zoomed out, optional bicubic.
 
+**As built in M4:**
+
+- **The canvas.** The images of a compare set share an area as wide as the widest and as tall as
+  the tallest of them. Zoom and position are kept in canvas coordinates, so one view state moves
+  every pane alike, and the canvas point under the cursor in one pane is the linked cursor's
+  place in the others. Each image has a placement on the canvas (top-left, centred, or scaled to
+  fit); the alignment transform of M6 goes in the same place.
+- **Panes** (single, side by side, grid) draw each image straight into the back buffer, clipped
+  to its pane, with the same shader as a single image.
+- **Two images in one pane** (split, blend, checkerboard) go through the intermediates: each
+  image is drawn under its own transform into a pane-sized target of 32-bit float per channel
+  that holds the stored sample values, alpha below zero meaning "no pixel here"; `combine.hlsl`
+  reads both and decides per screen pixel. The targets exist only while such a mode is in use
+  (2 × 16 bytes per pixel of the view: about 90 MB at 2160×1185).
+- **One set of display controls** (`display.hlsli`: window, gamma, exposure, channel) is included
+  by both shaders, so every pane and every mode shows the same values the same way.
+
 ## 8. Feature inventory of FastImageViewer → where it lands
 
 | Old feature | In FastImageViewer2 |
@@ -572,6 +628,73 @@ tabs for several open folders.
 - Display controls applied identically to all images: exposure, gamma, window/level, channel
   isolation (R, G, B, A, luma).
 - Different sizes: pixel-aligned (top-left or centre) or scaled to fit.
+
+*State 2026-10-10: built and measured (section 2.4); every item above is in, some paths untested.*
+The plan gave M4 no exit criteria of its own; the budgets it touches (zoom and pan in any
+compare mode, switching, idle) are met.
+
+Built: a compare set of 2 to 16 images, started from the selection in the panels (`C`), from the
+image on show and the next one (`C` with nothing selected), or from files opened together
+(command line, hand-over from a second process, drop); images added (item menu, drop with Ctrl)
+and removed (image menu); files deleted on disk leave the set, and the last one left is shown on
+its own. Six modes (`M`, or the compare panel): single, side by side, grid (columns and rows
+chosen to show the images largest), split with a divider that is dragged or moved with Up/Down
+(left|right or top|bottom), blend with an opacity, checkerboard with a cell size. Linked zoom and
+position, or one view per pane (`L`); the linked cursor, marked in the other panes, with name,
+size, position and stored values per image in each pane's corner. Flicker: `1`–`9` and the arrow
+keys switch in place, a number key held for more than 250 ms shows its image only until it is
+released, `K` blinks between the last two images (or through all) at 50 ms to 5 s. Display
+controls shared by all images: black and white point, gamma, exposure in stops, and one channel
+(red, green, blue, alpha, luma; `H`); 16-bit and float sets open with the window at the smallest
+and largest value of the whole set. Different sizes: top-left, centred, or scaled to fit. The
+compare settings are kept in `settings.json`; `--compare-mode` starts in a given mode.
+Under it: the canvas and the two-target combine pass of section 7; 51 new unit tests (pane
+layout, size matching, selection and peek logic, and the settings file, which had none; 167 in
+all); `fivbench compare`; `corpus\compare`; test messages that give the viewer mouse and key
+input with stated modifiers (posted Windows messages turned out to depend on where the real
+mouse is and which keys are held on the machine).
+
+Checked in the running viewer, from pictures of its window: all six modes with two images; grids
+of 3, 4 and 16; linked zoom; the linked cursor and its readouts (a half-size image reads x 1708
+where the original reads x 3416 when scaled to fit); panes unlinked; `1`–`9`, hold-to-peek, arrow
+keys; blinking; the divider dragged and moved by keys, left|right and top|bottom; swap; the three
+ways of matching sizes; an image with transparency (which also covers the checkerboard left
+untested in M1) and its alpha channel; red and luma; a 16-bit PNG next to a float TIFF with their
+common window; starting from a folder with `C` and with Ctrl+A, `C` (the first 16 of 40) and
+leaving with Esc; three files handed over by a second process; removing images through the menu
+down to one; deleting compared files on disk; the saved settings.
+Found and fixed on the way: with Ctrl held the 100 % key zoomed about the wrong centre while
+comparing; the window title did not follow the size of the set.
+
+**Changed from before, to be confirmed:**
+
+- Two to sixteen files opened together are now compared, in the mode used last (side by side at
+  first). Before, they were a list to walk through; more than sixteen still are.
+- While comparing, `1`–`9` are the images, so `1` is 100 % only outside a comparison; `Z` is
+  100 % always.
+- The display panel moved to the bottom right corner: the top corners name the compared images.
+- Different sizes default to top-left, pixel for pixel; the two images shown by the modes that
+  take two are the last two gone to, in the order of the set (`X` swaps).
+
+**Written but not tested:** a real drop of files (it shares its code with the hand-over that was
+tested) and a drop with Ctrl; selecting with Ctrl+click before `C` (the tests selected with
+Ctrl+A); "Compare the selected images" and "Add to the comparison" in the panels' item menu;
+renaming a compared file; a compared file changing on disk; the mouse cursor's shape over the
+divider; the green and blue channels and the exposure slider; blinking through all images; what
+is shown when the two float targets cannot be created; windows on a display of another DPI.
+
+**Not done:**
+
+- The waitable swap chain (left open in M2, suggested before the compare modes): every refresh
+  gets a frame as it is, but input still waits up to one refresh longer than it has to.
+- A comparison given on the command line skips the GDI first frame: its window shows its first
+  picture when Direct3D is up, about 230 ms after the start instead of 95 ms.
+- Images 10 to 16 of a set have no key; they are reached with the arrow keys or by clicking their pane.
+- Window and level as such: the window is set by its black and white points.
+- The compare panel is a fixed overlay at the bottom of the view (`P` hides it), not a dockable panel.
+- A pane shows "Loading" for a moment when its file is rewritten; a single image keeps the old picture until the new one is there.
+- All images of a set are held in full, whatever the cache budgets say: sixteen of 24 MP are 1.5 GB of RAM and 2 GB of video memory.
+- Pinning one image as the reference while stepping through others (M7).
 
 **M5 — Compare II: difference and metrics**
 - Difference modes: absolute, signed (diverging colormap), squared, relative; gain; per channel

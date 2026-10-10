@@ -17,7 +17,7 @@
   </Target>
 
   <ItemGroup>
-    <ShaderSource Include="$(RepoRoot)shaders\*.hlsl;$(RepoRoot)shaders\build.ps1" />
+    <ShaderSource Include="$(RepoRoot)shaders\*.hlsl;$(RepoRoot)shaders\*.hlsli;$(RepoRoot)shaders\build.ps1" />
   </ItemGroup>
 
 </Project>

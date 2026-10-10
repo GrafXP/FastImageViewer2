@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Text;
 using System.Text.Unicode;
+using Fiv.Comparing;
 using Fiv.Imaging;
 using Fiv.Indexing;
 using Fiv.Thumbnails;
@@ -43,10 +44,23 @@ internal sealed unsafe partial class MainWindow
         ("F2 / Del", "rename / move to the Recycle Bin"),
         ("I", "exact pixels or smooth when zoomed in"),
         ("L", "keep zoom and position when changing image"),
-        ("D", "display panel: black, white, gamma"),
+        ("D", "display panel: black, white, gamma, exposure, channel"),
+        ("H / Shift+H", "show colour, red, green, blue, alpha, luma in turn"),
+        ("Z", "100 %"),
         ("F11 / F12", "fullscreen / timing overlay"),
         ("Right click", "menu"),
-        ("Esc", "close a dialog, leave fullscreen, or quit"),
+        ("Esc", "close a dialog, leave fullscreen, stop comparing, or quit"),
+        ("", ""),
+        ("C", "compare the selected images, or this one with the next; again to stop"),
+        ("Drop 2 to 16 files", "compare them; with Ctrl held, add them to the comparison"),
+        ("While comparing", ""),
+        ("M / Shift+M", "mode: single, side by side, grid, split, blend, checkerboard"),
+        ("1 ... 9", "go to that image; held down, only until released"),
+        ("Left / Right, Home / End", "previous / next, first / last image of the set"),
+        ("X / K", "swap the two images / blink between them"),
+        ("Up / Down", "divider, opacity, cell size or blink rate (with Shift: finer)"),
+        ("L", "link zoom and position of the panes, or not"),
+        ("P", "compare panel"),
     ];
 
     // ---------------------------------------------------------------- what the actions work on
@@ -55,7 +69,12 @@ internal sealed unsafe partial class MainWindow
     List<string> ActionPaths()
     {
         var paths = new List<string>();
-        if (_folder != null && _selectionListing == _folder.Listing && _selection.Count > 1)
+        if (Comparing)
+        {
+            // The selection is what is being compared; an action means one image: the one whose menu is open, or the active one.
+            paths.Add(_menuPath ?? _compare[_pick.Active].Path);
+        }
+        else if (_folder != null && _selectionListing == _folder.Listing && _selection.Count > 1)
         {
             for (int position = 0; position < _folder.Count; position++)
                 if (_selection.Contains(_folder.ListingIndexAt(position))) paths.Add(_folder.PathAt(position));
@@ -125,7 +144,8 @@ internal sealed unsafe partial class MainWindow
         _dialogError = FileActions.Rename(_renamePath, newName);
         if (_dialogError != null) return;
         // Stay on the file under its new name when the folder is read again.
-        if (_shown != null && string.Equals(_shown.Path, _renamePath, StringComparison.OrdinalIgnoreCase)) _followName = newName.Trim();
+        if (Comparing) RenameInCompare(_renamePath, Path.Combine(Path.GetDirectoryName(_renamePath) ?? "", newName.Trim()));
+        else if (_shown != null && string.Equals(_shown.Path, _renamePath, StringComparison.OrdinalIgnoreCase)) _followName = newName.Trim();
         _dialog = Dialog.None;
         RefreshFolder();
     }
@@ -144,6 +164,12 @@ internal sealed unsafe partial class MainWindow
         bool ok = FileActions.Recycle(_hwnd, _deletePaths);
         _dialog = Dialog.None;
         if (!ok) Notice("Not everything could be moved to the Recycle Bin.");
+        // A deleted image leaves the comparison at once, also where no folder listing would notice it gone.
+        foreach (string path in _deletePaths)
+        {
+            int compared = _compare.FindIndex(item => string.Equals(item.Path, path, StringComparison.OrdinalIgnoreCase));
+            if (compared >= 0 && !File.Exists(path)) RemoveFromCompare(compared);
+        }
         _selection.Clear();
         RefreshFolder(); // the watcher would notice too; this is sooner
     }
@@ -195,6 +221,8 @@ internal sealed unsafe partial class MainWindow
         DrawRecentMenu("Recent files"u8, _settings.RecentFiles, folder: false);
         DrawRecentMenu("Recent folders"u8, _settings.RecentFolders, folder: true);
         ImGui.Separator();
+        DrawCompareItems();
+        ImGui.Separator();
         DrawFileItems();
         ImGui.Separator();
         if (ImGui.MenuItem("Folder panel"u8, "B"u8, _showBrowser)) _showBrowser = !_showBrowser;
@@ -224,6 +252,39 @@ internal sealed unsafe partial class MainWindow
             }
         }
         ImGui.EndMenu();
+    }
+
+    /// <summary>The entries of the image's menu that start, change and end a comparison.</summary>
+    void DrawCompareItems()
+    {
+        if (!Comparing)
+        {
+            bool several = _folder != null && _selectionListing == _folder.Listing && _selection.Count > 1;
+            if (ImGui.MenuItem(several ? "Compare the selected images"u8 : "Compare with the next image"u8, "C"u8)) _deferred = CompareSelected;
+            return;
+        }
+        if (ImGui.BeginMenu("Compare mode"u8))
+        {
+            for (CompareMode mode = CompareMode.Single; mode <= CompareMode.Checker; mode++)
+            {
+                if (ImGui.MenuItem(ModeLabel(mode), mode == CompareMode.Single ? "M"u8 : default, mode == _compareMode))
+                {
+                    CompareMode chosen = mode;
+                    _deferred = () => SetCompareMode(chosen);
+                }
+            }
+            ImGui.EndMenu();
+        }
+        if (ImGui.MenuItem("Swap the two images"u8, "X"u8, _pick.Swapped)) _pick.Swapped = !_pick.Swapped;
+        if (ImGui.MenuItem("Blink"u8, "K"u8, _blink)) _deferred = ToggleBlink;
+        if (ImGui.MenuItem("Link zoom and position"u8, "L"u8, _linked)) SetLinked(!_linked);
+        if (ImGui.MenuItem("Compare panel"u8, "P"u8, _showComparePanel)) _showComparePanel = !_showComparePanel;
+        if (ImGui.MenuItem("Remove this image from the comparison"u8))
+        {
+            int active = _pick.Active;
+            _deferred = () => RemoveFromCompare(active);
+        }
+        if (ImGui.MenuItem("Stop comparing"u8, "C"u8)) _deferred = () => StopCompare();
     }
 
     /// <summary>The entries that act on files, shared by the image's menu and the panels' item menu.</summary>
@@ -301,7 +362,8 @@ internal sealed unsafe partial class MainWindow
     {
         if (_notice == null || Environment.TickCount64 > _noticeUntil) return;
         Utf8Of(_notice);
-        ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth / 2f, ViewY + ViewHeight - 16 * (float)_dpiScale), ImGuiCond.Always, new Vector2(0.5f, 1));
+        float above = Comparing && _showComparePanel ? _comparePanelHeight : 0; // the compare panel has that place
+        ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth / 2f, ViewY + ViewHeight - 16 * (float)_dpiScale - above), ImGuiCond.Always, new Vector2(0.5f, 1));
         ImGui.SetNextWindowBgAlpha(0.75f);
         if (ImGui.Begin("notice"u8, PinnedWindow | ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoInputs))
         {
@@ -397,6 +459,14 @@ internal sealed unsafe partial class MainWindow
         _settings.SortDescending = _sortDescending;
         _settings.KeepView = _keepView;
         _settings.ExactPixels = _display.Sharp;
+        if (_options.CompareMode == null) _settings.CompareMode = _compareMode; // a mode forced from the command line is not the user's choice
+        _settings.CompareSizes = _sizeMatch;
+        _settings.CompareLinked = _linked;
+        _settings.CompareCursor = _linkedCursor;
+        _settings.CompareLabels = _paneLabels;
+        _settings.CompareSplitRows = _splitRows;
+        _settings.CompareBlinkMs = _blinkMs;
+        _settings.CompareCheckerSize = _checkerSize;
         _settings.Save(Path.Combine(_options.ProfileDir, "settings.json"));
     }
 }

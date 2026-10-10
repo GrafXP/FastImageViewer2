@@ -1,5 +1,8 @@
 // Draws one tile of an image: position from an affine transform of image coordinates,
-// then the display controls (brightness window, gamma) and the transparency checkerboard.
+// then either the display controls (brightness window, gamma, exposure, channel) and the
+// transparency checkerboard, or, for the compare modes, the stored values untouched.
+
+#include "display.hlsli"
 
 Texture2D image : register(t0);
 SamplerState imageSampler : register(s0);
@@ -11,11 +14,12 @@ cbuffer View : register(b0)
     float4 tileRect;  // the part of the image this tile draws: x0, y0, x1, y1 (image pixels)
     float4 tileUv;    // xy: image position of the texture's corner; zw: 1 / size the texture covers
     float4 texSize;   // xy: texture size in texels
-    float4 window;    // x: low; y: 1 / (high - low); z: 1 / gamma
-    float4 checker;   // x: cell size in screen pixels; y, z: the two grey levels
+    float4 window;    // see display.hlsli
+    float4 checker;
     uint sharp;       // 1: crisp texel edges when magnified; 0: plain (tri)linear
     uint gray;        // 1: single-channel texture, shown as grey
-    uint2 unused;
+    uint channel;     // see display.hlsli
+    uint unused;
 };
 
 struct VsOut
@@ -34,7 +38,7 @@ VsOut vs_main(uint id : SV_VertexID)
     return o;
 }
 
-float4 ps_main(VsOut i) : SV_Target
+float4 Stored(VsOut i)
 {
     float2 texel = (i.imagePosition - tileUv.xy) * tileUv.zw * texSize.xy;
     if (sharp)
@@ -45,12 +49,16 @@ float4 ps_main(VsOut i) : SV_Target
         texel = edge + clamp((texel - edge) / fwidth(texel), -0.5, 0.5);
     }
     float4 color = image.Sample(imageSampler, texel / texSize.xy);
-    if (gray) color = float4(color.rrr, 1);
+    return gray ? float4(color.rrr, 1) : color;
+}
 
-    color.rgb = saturate((color.rgb - window.x) * window.y);
-    color.rgb = pow(color.rgb, window.z);
+float4 ps_main(VsOut i) : SV_Target
+{
+    return float4(Shade(Stored(i), i.position.xy, window, checker, channel), 1);
+}
 
-    float2 cell = floor(i.position.xy / checker.x);
-    float background = lerp(checker.y, checker.z, fmod(cell.x + cell.y, 2));
-    return float4(lerp(background.xxx, color.rgb, color.a), 1);
+// Into an intermediate target that combine.hlsl reads: the sample values as stored, alpha included.
+float4 ps_raw(VsOut i) : SV_Target
+{
+    return Stored(i);
 }

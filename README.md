@@ -21,12 +21,19 @@ dotnet test tests\Fiv.Tests       # unit tests
 ## Use
 
 ```powershell
-publish\FastImageViewer2.exe photo.jpg            # or several files
+publish\FastImageViewer2.exe photo.jpg            # one image, and with it its folder
+publish\FastImageViewer2.exe a.jpg b.jpg c.jpg    # two to sixteen images: compared
 ```
 
 Opening one file also lists its folder, so next and previous walk through it. The folder is
 watched: files added, removed or changed show up by themselves. Starting the viewer again while
 it runs hands the files to the running window.
+
+Two to sixteen files opened together, dropped on the window, or selected in a panel and sent
+off with `C`, are compared: side by side, in a grid, one at a time in the same place, or two of
+them in one pane, split by a divider, blended, or as a checkerboard. Zoom, position and the
+display controls are the same for all of them, and each pane shows the position and values of
+its own pixel under the cursor.
 
 | Input | Action |
 |---|---|
@@ -45,13 +52,31 @@ it runs hands the files to the running window.
 | Left drag | pan |
 | Double click | 100 % at the cursor, or back to fit |
 | `F` or `0` | fit to window |
-| `1` | 100 % |
+| `1` or `Z` | 100 % (while comparing, `1` is the first image and only `Z` is 100 %) |
 | `I` | exact pixels or smooth when zoomed in |
 | `L` | keep zoom and position when changing image |
-| `D` | display panel: black point, white point, gamma |
+| `D` | display panel: black point, white point, gamma, exposure, channel |
+| `H`, `Shift+H` | show colour, red, green, blue, alpha, luma in turn |
 | `F11` | fullscreen |
 | `F12` | timing overlay: start-up, this image, navigation, cache, folder index |
-| `Esc` | leave fullscreen, or quit |
+| `Esc` | leave fullscreen, stop comparing, or quit |
+
+Comparing:
+
+| Input | Action |
+|---|---|
+| `C` | compare the selected images, or the image on show with the next one; again to stop |
+| Drop 2 to 16 files | compare them; with `Ctrl` held, add what is dropped to the comparison |
+| `M`, `Shift+M` | mode: single, side by side, grid, split, blend, checkerboard |
+| `1` … `9` | go to that image; held down, show it only until the key is released |
+| `Left` / `Right`, `Home` / `End` | previous / next, first / last image of the set |
+| `X` | swap the two images of the split, blend and checkerboard |
+| `K` | blink between the last two images |
+| `Up` / `Down` | move the divider, change the opacity, the cell size or the blink rate (`Shift`: finer) |
+| `L` | one zoom and position for all panes, or one each |
+| `P` | compare panel: all of the above, how different sizes are matched, labels |
+| Click a pane, drag the divider | make its image the active one; move the divider |
+| Right click | menu: mode, remove the image from the comparison, stop |
 
 The status bar shows position in the folder, file, size, zoom, and the coordinates and stored
 values of the pixel under the cursor (16-bit and float values as they are in the file).
@@ -61,7 +86,8 @@ codec for (WebP, HEIC, AVIF, camera raw) through WIC.
 
 Options: `--cache-mb <n>` and `--vram-mb <n>` set the budgets of the image cache (default 4096
 and 2048); `--no-prefetch` loads only the image asked for; `--new-instance` does not hand over
-to a running viewer.
+to a running viewer; `--compare-mode <single|side|grid|split|blend|checker>` starts a comparison
+in that mode instead of the one used last.
 
 ## Measure
 
@@ -75,12 +101,14 @@ $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
 & $bench index       # folder read and sort for 1k / 10k / 100k files, header probes
 & $bench thumbs      # making thumbnails, and reading them back from the cache
 & $bench browse      # folder panel: first screen of thumbnails, scrolling 95,000 images
+& $bench compare     # compare modes: loading a set, zoom and pan in each mode, switching
 & $bench decode      # decoder timings
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)
 ```
 
 The benchmarks open and close viewer windows on the desktop; they do not take the focus.
 `bench\tools\window-shot.ps1` starts the viewer, sends it keys and mouse input, and saves
-pictures of its window.
+pictures of its window. Its `press`, `hover`, `clickw` and `dragc` steps reach the viewer
+through test messages, so they work whatever the real mouse and keyboard are doing.
 
 A crash writes to `%LOCALAPPDATA%\FastImageViewer2\crash.log`.

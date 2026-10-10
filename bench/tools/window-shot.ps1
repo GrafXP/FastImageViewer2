@@ -3,10 +3,16 @@
 #       "wait:500"            sleep ms
 #       "shot:name"           screenshot to <OutDir>\name.jpg
 #       "key:0x70"            WM_KEYDOWN with that virtual key
+#       "keyup:0x70"          WM_KEYUP with that virtual key (for keys that act differently when held)
+#       "press:0x4D[:sc]"     a key the viewer acts on, with Shift ("s") and Ctrl ("c") as stated and not as the real keyboard has them
+#       "release:0x4D"        that key released
 #       "wheel:120:800:450"   WM_MOUSEWHEEL delta at client x,y
 #       "drag:x0:y0:x1:y1"    left-button drag in client coordinates
+#       "dragc:x0:y0:x1:y1"   the same, but working wherever the real mouse is (see "hover")
 #       "move:x:y"            mouse move in client coordinates
+#       "hover:x:y"           tell the viewer the mouse rests there (a mouse move is followed by "mouse left" when the real mouse is elsewhere)
 #       "dbl:x:y"             double click
+#       "rclick:x:y"          right click on the image, in client coordinates
 #       "ps:<command>"        run a PowerShell command (e.g. change files the viewer is watching)
 #       "clickw:x:y"          left click at a position in window pixels, as in an unscaled screenshot
 #       "type:text"           type characters into the focused text field
@@ -49,13 +55,24 @@ try {
         switch ($a[0]) {
             'wait' { Start-Sleep -Milliseconds ([int]$a[1]) }
             'clickw' {
-                # a left click at a position given in pixels of the window as the screenshots show it (before -Scale)
+                # a left click at a position given in pixels of the window as the screenshots show it (before -Scale).
+                # Through WM_APP_TEST_MOUSE (0: move, 1: button down, 2: up), so that it works wherever the real mouse is.
                 $r = New-Object W+RECT; [void][W]::GetWindowRect($h, [ref]$r)
                 $o = New-Object W+POINT; $o.X = 0; $o.Y = 0; [void][W]::ClientToScreen($h, [ref]$o)
                 $cx = [int]$a[1] - ($o.X - $r.L); $cy = [int]$a[2] - ($o.Y - $r.T)
-                [void][W]::PostMessageW($h, 0x0200, [IntPtr]::Zero, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 60
-                [void][W]::PostMessageW($h, 0x0201, [IntPtr]1, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 60
-                [void][W]::PostMessageW($h, 0x0202, [IntPtr]::Zero, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 60
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]1, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]2, [W]::L($cx, $cy)); Start-Sleep -Milliseconds 80
+            }
+            'dragc' {
+                # a left-button drag in client coordinates, through WM_APP_TEST_MOUSE, in a few steps
+                $x0 = [int]$a[1]; $y0 = [int]$a[2]; $x1 = [int]$a[3]; $y1 = [int]$a[4]
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L($x0, $y0)); Start-Sleep -Milliseconds 80
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]1, [W]::L($x0, $y0)); Start-Sleep -Milliseconds 80
+                foreach ($i in 1..4) {
+                    [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L([int]($x0 + ($x1 - $x0) * $i / 4), [int]($y0 + ($y1 - $y0) * $i / 4))); Start-Sleep -Milliseconds 40
+                }
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]2, [W]::L($x1, $y1)); Start-Sleep -Milliseconds 80
             }
             'type' {
                 # characters as WM_CHAR, for text fields
@@ -63,8 +80,22 @@ try {
             }
             'ps' { Invoke-Expression ($step.Substring(3)) | Out-Null }
             'key' { [void][W]::PostMessageW($h, 0x0100, [IntPtr][int]$a[1], [IntPtr]::Zero) }
+            'keyup' { [void][W]::PostMessageW($h, 0x0101, [IntPtr][int]$a[1], [IntPtr]::Zero) }
+            'press' {
+                # WM_APP_TEST_KEY: a key with its modifiers stated ("s" Shift, "c" Ctrl), whatever the real keyboard is doing
+                $mods = if ($a.Count -gt 2) { $a[2] } else { '' }
+                $flags = 0; if ($mods -match 's') { $flags = $flags -bor 1 }; if ($mods -match 'c') { $flags = $flags -bor 2 }
+                [void][W]::PostMessageW($h, 0x8017, [IntPtr][int]$a[1], [IntPtr]$flags)
+            }
+            'release' { [void][W]::PostMessageW($h, 0x8017, [IntPtr][int]$a[1], [IntPtr]4) }
             'move' { [void][W]::PostMessageW($h, 0x0200, [IntPtr]::Zero, [W]::L([int]$a[1], [int]$a[2])) }
+            'hover' { [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L([int]$a[1], [int]$a[2])) }   # WM_APP_TEST_MOUSE
             'dbl' { [void][W]::PostMessageW($h, 0x0203, [IntPtr]1, [W]::L([int]$a[1], [int]$a[2])) }
+            'rclick' {
+                # a right click on the image, in client coordinates: opens its menu there
+                [void][W]::PostMessageW($h, 0x8016, [IntPtr]::Zero, [W]::L([int]$a[1], [int]$a[2])); Start-Sleep -Milliseconds 80
+                [void][W]::PostMessageW($h, 0x0205, [IntPtr]::Zero, [W]::L([int]$a[1], [int]$a[2])); Start-Sleep -Milliseconds 80
+            }
             'wheel' {
                 $pt = New-Object W+POINT; $pt.X = [int]$a[2]; $pt.Y = [int]$a[3]; [void][W]::ClientToScreen($h, [ref]$pt)
                 [void][W]::PostMessageW($h, 0x020A, [IntPtr]([int]$a[1] -shl 16), [W]::L($pt.X, $pt.Y))

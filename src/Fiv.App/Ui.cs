@@ -68,6 +68,17 @@ internal sealed unsafe class Ui : IDisposable
     public bool HandleMessage(HWND window, uint message, WPARAM wParam, LPARAM lParam) =>
         ImGuiImplWin32.WndProcHandler((nint)window.Value, message, wParam.Value, lParam.Value) != 0;
 
+    /// <summary>
+    /// For tests: tells ImGui where the mouse is and, with <paramref name="button"/> 1 or 2, that
+    /// the left button went down or up, as if the window had received the mouse messages.
+    /// </summary>
+    public void TestMouse(float x, float y, int button)
+    {
+        ImGuiIOPtr io = ImGui.GetIO();
+        io.AddMousePosEvent(x, y);
+        if (button != 0) io.AddMouseButtonEvent(0, button == 1);
+    }
+
     public void NewFrame()
     {
         ImGuiImplD3D11.NewFrame();

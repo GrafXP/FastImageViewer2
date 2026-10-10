@@ -48,6 +48,20 @@ internal sealed class Options
     /// <summary>A separate single-instance group, so that benchmark runs never talk to the user's own viewer.</summary>
     public string Instance { get; private set; } = "";
 
+    /// <summary>The compare mode to start in, instead of the one used last: single, side, grid, split, blend or checker.</summary>
+    public Fiv.Comparing.CompareMode? CompareMode { get; private set; }
+
+    static Fiv.Comparing.CompareMode? ParseCompareMode(string name) => name.ToLowerInvariant() switch
+    {
+        "single" => Fiv.Comparing.CompareMode.Single,
+        "side" or "sidebyside" => Fiv.Comparing.CompareMode.SideBySide,
+        "grid" => Fiv.Comparing.CompareMode.Grid,
+        "split" => Fiv.Comparing.CompareMode.Split,
+        "blend" => Fiv.Comparing.CompareMode.Blend,
+        "checker" or "checkerboard" => Fiv.Comparing.CompareMode.Checker,
+        _ => null,
+    };
+
     public static Options Parse(string[] args)
     {
         var options = new Options();
@@ -66,6 +80,7 @@ internal sealed class Options
                 case "--no-panels": options.NoPanels = true; break;
                 case "--filmstrip": options.ShowFilmstrip = true; break;
                 case "--profile" when i + 1 < args.Length: options.ProfileDir = Path.GetFullPath(args[++i]); break;
+                case "--compare-mode" when i + 1 < args.Length: options.CompareMode = ParseCompareMode(args[++i]); break;
                 case "--cache-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int cacheMb): options.CacheMb = Math.Max(0, cacheMb); i++; break;
                 case "--vram-mb" when i + 1 < args.Length && int.TryParse(args[i + 1], out int vramMb): options.VramMb = Math.Max(0, vramMb); i++; break;
                 case "--delay-gpu" when i + 1 < args.Length && int.TryParse(args[i + 1], out int delay): options.DelayGpuMs = delay; i++; break;

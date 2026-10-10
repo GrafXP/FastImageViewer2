@@ -534,6 +534,13 @@ internal sealed unsafe partial class MainWindow
         {
             DrawFileItems();
             if (ImGui.MenuItem("Copy name"u8) && FileActions.CopyText(_hwnd, Path.GetFileName(path))) Notice("Name copied.");
+            ImGui.Separator();
+            if (ImGui.MenuItem("Compare the selected images"u8, default(ReadOnlySpan<byte>), false, _selection.Count > 1)) _deferred = CompareSelected;
+            if (ImGui.MenuItem(Comparing ? "Add to the comparison"u8 : "Compare with the image on show"u8, default(ReadOnlySpan<byte>), false, _shown != null))
+            {
+                string chosen = path;
+                _deferred = () => AddToCompare(chosen);
+            }
         }
         ImGui.EndPopup();
     }

@@ -38,6 +38,20 @@ internal sealed unsafe partial class MainWindow
     /// <summary>Sent by tests: show the Open dialog (wParam 1: for a folder), as Ctrl+O would.</summary>
     const uint WM_APP_TEST_OPEN_DIALOG = PInvoke.WM_APP + 21;
 
+    /// <summary>
+    /// Sent by tests: the mouse is at this client position (x in the low word of lParam, y in the
+    /// high word); wParam 1: and its left button goes down, 2: up. Posted mouse messages do not
+    /// do: with the real mouse elsewhere, Windows follows a WM_MOUSEMOVE with WM_MOUSELEAVE.
+    /// </summary>
+    const uint WM_APP_TEST_MOUSE = PInvoke.WM_APP + 22;
+
+    /// <summary>
+    /// Sent by tests: a key with its modifiers stated (wParam: virtual key; lParam: 1 Shift, 2 Ctrl,
+    /// 4 the key is released). A posted WM_KEYDOWN takes Shift and Ctrl from the real keyboard,
+    /// which whoever is working on the machine may be holding.
+    /// </summary>
+    const uint WM_APP_TEST_KEY = PInvoke.WM_APP + 23;
+
     /// <summary>Sent by the benchmark tool: start the frame statistics afresh, so that they cover only what follows.</summary>
     const uint WM_APP_RESET_STATISTICS = PInvoke.WM_APP + 20;
     const nuint ShowTimerId = 1, SettleTimerId = 2, FolderTimerId = 3, NoticeTimerId = 4;
@@ -120,6 +134,14 @@ internal sealed unsafe partial class MainWindow
         _sortDescending = settings.SortDescending;
         _keepView = settings.KeepView;
         _display.Sharp = settings.ExactPixels;
+        _compareMode = options.CompareMode ?? settings.CompareMode;
+        _sizeMatch = settings.CompareSizes;
+        _linked = settings.CompareLinked;
+        _linkedCursor = settings.CompareCursor;
+        _paneLabels = settings.CompareLabels;
+        _splitRows = settings.CompareSplitRows;
+        _blinkMs = settings.CompareBlinkMs;
+        _checkerSize = settings.CompareCheckerSize;
         _files.AddRange(options.Files);
         _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE),
             (long)(options.CacheMb ?? settings.CacheMb) << 20, (long)(options.VramMb ?? settings.VramMb) << 20);
@@ -179,8 +201,14 @@ internal sealed unsafe partial class MainWindow
         _viewY = y;
         _viewWidth = width;
         _viewHeight = height;
-        if (_view.Fit && _shown is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+        FitToView();
         Invalidate(); // the image was already drawn for the old rectangle in this frame
+    }
+
+    /// <summary>The view changed size: an image that is fitted to it stays fitted. (A comparison fits its panes when it lays them out.)</summary>
+    void FitToView()
+    {
+        if (!Comparing && _view.Fit && _shown is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
     }
 
     int FileCount => _folder?.Count ?? _files.Count;
@@ -202,7 +230,8 @@ internal sealed unsafe partial class MainWindow
         {
             Settings.Remember(_settings.RecentFiles, _files[0]);
             if (System.IO.Path.GetDirectoryName(_files[0]) is { Length: > 0 } folder) Settings.Remember(_settings.RecentFolders, folder);
-            Request();
+            if (ComparedWhenOpened(_files.Count)) StartCompare(_files.ConvertAll(file => (file, 0L, 0L)));
+            else Request();
         }
         CreateWindow();
         Perf.Stamp("window");
@@ -342,7 +371,9 @@ internal sealed unsafe partial class MainWindow
     void UpdateTitle()
     {
         if (_hwnd.IsNull) return;
-        string title = _shown == null ? "FastImageViewer2" : $"{System.IO.Path.GetFileName(_shown.Path)} - FastImageViewer2";
+        string title = _shown == null ? "FastImageViewer2"
+            : Comparing ? $"{System.IO.Path.GetFileName(_shown.Path)} - comparing {_compare.Count} images - FastImageViewer2"
+            : $"{System.IO.Path.GetFileName(_shown.Path)} - FastImageViewer2";
         fixed (char* text = title) PInvoke.SetWindowText(_hwnd, text);
     }
 
@@ -375,7 +406,15 @@ internal sealed unsafe partial class MainWindow
 
     // ---------------------------------------------------------------- files and navigation
 
-    void Open(IEnumerable<string> files)
+    /// <summary>Two to sixteen files opened together are compared; more are a list to walk through.</summary>
+    static bool ComparedWhenOpened(int count) => count is >= 2 and <= MaxCompare;
+
+    /// <summary>
+    /// Opens what was dropped, picked, or handed over by another process: a folder, one file
+    /// (and with it its folder), or several files, which are compared. With
+    /// <paramref name="addToComparison"/> the files join the comparison instead of replacing what is shown.
+    /// </summary>
+    void Open(IEnumerable<string> files, bool addToComparison = false)
     {
         var list = files.ToList();
         if (list.Count == 0) return;
@@ -384,21 +423,25 @@ internal sealed unsafe partial class MainWindow
             OpenFolder(list[0]);
             return;
         }
-
-        // Another file of the folder already indexed: keep the index (and drop a filter that hides the file).
-        if (list.Count == 1 && _folderAll != null &&
-            string.Equals(System.IO.Path.GetDirectoryName(list[0]), _folderAll.Directory, StringComparison.OrdinalIgnoreCase) &&
-            _folderAll.Find(System.IO.Path.GetFileName(list[0].AsSpan())) >= 0)
+        if (addToComparison && (Comparing || _shown != null))
         {
-            ReadOnlySpan<char> name = System.IO.Path.GetFileName(list[0].AsSpan());
-            if (_folder == null || _folder.Find(name) < 0)
+            foreach (string file in list) AddToCompare(file);
+            return;
+        }
+        StopCompare(resume: false);
+        bool compare = ComparedWhenOpened(list.Count);
+
+        // Files of the folder already indexed: keep the index (and drop a filter that hides one of them).
+        if ((list.Count == 1 || compare) && _folderAll is { } all && AllListed(list, all))
+        {
+            if (_folder == null || !AllListed(list, _folder))
             {
                 ClearFilter();
                 _folder = _folderAll;
             }
             _files.Clear();
             _files.AddRange(list);
-            _fileIndex = _folder.Find(name);
+            _fileIndex = _folder.Find(System.IO.Path.GetFileName(list[0].AsSpan()));
         }
         else
         {
@@ -411,8 +454,16 @@ internal sealed unsafe partial class MainWindow
         _direction = 1;
         _fast = false;
         _scrollBrowserToCurrent = _scrollStripToCurrent = true;
-        Request();
+        if (compare) StartCompare(list.ConvertAll(file => (file, 0L, 0L)));
+        else Request();
         SelectCurrent();
+
+        static bool AllListed(List<string> paths, FolderIndex folder)
+        {
+            foreach (string path in paths)
+                if (!InFolder(path, folder.Directory) || folder.Find(System.IO.Path.GetFileName(path.AsSpan())) < 0) return false;
+            return true;
+        }
     }
 
     /// <summary>Shows a folder: lists it, then its first image.</summary>
@@ -427,6 +478,7 @@ internal sealed unsafe partial class MainWindow
             return;
         }
         Settings.Remember(_settings.RecentFolders, directory);
+        StopCompare(resume: false);
         LeaveFolder();
         _files.Clear();
         _target = null;
@@ -465,10 +517,13 @@ internal sealed unsafe partial class MainWindow
     {
         if (FileCount == 0) return;
         index = Math.Clamp(index, 0, FileCount - 1);
-        if (index == _fileIndex) return;
+        // Going to an image of the folder ends a comparison, also when it is the image the folder was left at.
+        bool leftComparison = Comparing;
+        if (leftComparison) StopCompare(resume: false);
+        else if (index == _fileIndex) return;
         long now = Stopwatch.GetTimestamp();
-        _direction = index > _fileIndex ? 1 : -1;
-        _fast = Stopwatch.GetElapsedTime(_lastStep, now).TotalMilliseconds < FastStepMs;
+        _direction = index >= _fileIndex ? 1 : -1;
+        _fast = !leftComparison && Stopwatch.GetElapsedTime(_lastStep, now).TotalMilliseconds < FastStepMs;
         _lastStep = now;
         _fileIndex = index;
         _scrollBrowserToCurrent = _scrollStripToCurrent = true;
@@ -498,6 +553,11 @@ internal sealed unsafe partial class MainWindow
     /// </summary>
     void UpdateWanted()
     {
+        if (Comparing)
+        {
+            RequestCompare(); // the whole set, in full
+            return;
+        }
         _wants.Clear();
         if (FileCount == 0)
         {
@@ -555,7 +615,7 @@ internal sealed unsafe partial class MainWindow
     /// </summary>
     void AdvanceShown()
     {
-        if (_target == null) return;
+        if (Comparing || _target == null) return; // a comparison decides what it shows in AdvanceCompare
         if (Showable(_target))
         {
             if (_shown != _target) Show(_target, _fileIndex);
@@ -610,6 +670,11 @@ internal sealed unsafe partial class MainWindow
     void OnPipeline()
     {
         if (!_pipeline.Drain(_shown, out bool shownChanged)) return;
+        if (Comparing)
+        {
+            AdvanceCompare(); // any image of the set may be on screen: repaint
+            return;
+        }
         if (_target is { } target)
         {
             if (target.FileReadAt != 0) Perf.StampOnce(ref _stampedRead, "file read", target.FileReadAt);
@@ -752,6 +817,15 @@ internal sealed unsafe partial class MainWindow
     /// </summary>
     void AdoptFolder(FolderIndex index, bool firstIfGone = false)
     {
+        if (Comparing)
+        {
+            // The set stays on show; the new list is what next and previous walk once it is left.
+            _folder = index;
+            _fileIndex = Math.Clamp(_fileIndex, 0, Math.Max(0, index.Count - 1));
+            _followName = null;
+            RebindCompare();
+            return;
+        }
         string? current = FileCount > 0 ? FileAt(Math.Clamp(_fileIndex, 0, FileCount - 1)) : null;
         int position = current == null ? -1 : index.Find(System.IO.Path.GetFileName(current.AsSpan()));
         if (_followName != null)
@@ -930,7 +1004,8 @@ internal sealed unsafe partial class MainWindow
     void OnPaint()
     {
         // Until Direct3D has something to show, a picture GDI can paint must not be replaced by an empty frame.
-        bool useGpu = _renderer != null && (_presented || _shown?.BestGpu != null || GdiSource(_shown) == null);
+        // (A comparison is laid out in panes, which GDI does not draw: it waits for Direct3D.)
+        bool useGpu = _renderer != null && (_presented || Comparing || _shown?.BestGpu != null || GdiSource(_shown) == null);
         if (useGpu)
         {
             // Validate first: rendering may invalidate again to ask for a follow-up frame.
@@ -952,8 +1027,10 @@ internal sealed unsafe partial class MainWindow
         long started = Stopwatch.GetTimestamp();
         gpu.BeginFrame(0.11f, 0.11f, 0.12f);
 
-        LoadedImage? drawn = _shown?.BestGpu != null ? _shown : null;
-        if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display, ViewX, ViewY, ViewWidth, ViewHeight);
+        bool comparing = Comparing;
+        LoadedImage? drawn = !comparing && _shown?.BestGpu != null ? _shown : null;
+        if (comparing) RenderCompare();
+        else if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display, ViewX, ViewY, ViewWidth, ViewHeight);
         if (_thumbs != null) _thumbsUploaded += _thumbs.Upload();
         if (_ui != null)
         {
@@ -966,6 +1043,7 @@ internal sealed unsafe partial class MainWindow
         gpu.Present(waitForVerticalBlank: true);
         _presented = true;
         long presented = Stopwatch.GetTimestamp();
+        if (comparing && Comparing) AfterCompareFrame(presented);
         CountFrame(started, presented);
         if (drawn != null)
         {
@@ -1116,7 +1194,7 @@ internal sealed unsafe partial class MainWindow
         PAINTSTRUCT paint;
         HDC dc = PInvoke.BeginPaint(_hwnd, &paint);
         RECT client = new() { right = _clientWidth, bottom = _clientHeight };
-        DecodedImage? source = GdiSource(_shown);
+        DecodedImage? source = Comparing ? null : GdiSource(_shown);
         if (source == null)
         {
             PInvoke.FillRect(dc, &client, _backgroundBrush);
@@ -1184,32 +1262,82 @@ internal sealed unsafe partial class MainWindow
         _clientHeight = height;
         UseWholeClientAsView();
         _gpu?.Resize(width, height);
-        if (_view.Fit && _shown is { HasSize: true } image) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+        FitToView();
         Invalidate();
     }
 
     void OnMouseWheel(int delta, int screenX, int screenY)
     {
-        if (_shown is not { HasSize: true }) return;
         var point = new System.Drawing.Point(screenX, screenY);
         PInvoke.ScreenToClient(_hwnd, &point);
         double factor = Math.Pow(WheelZoomStep, delta / (double)PInvoke.WHEEL_DELTA);
-        _view.ZoomAt(_view.Zoom * factor, point.X - ViewX, point.Y - ViewY, ViewWidth, ViewHeight);
+        if (Comparing) CompareWheel(factor, point.X, point.Y);
+        else if (_shown is { HasSize: true }) _view.ZoomAt(_view.Zoom * factor, point.X - ViewX, point.Y - ViewY, ViewWidth, ViewHeight);
+        else return;
         Invalidate();
     }
 
     void OnMouseMove(int x, int y)
     {
-        if (_panning && _shown is { HasSize: true } image)
+        if (_panning)
         {
-            _view.Pan(x - _mouseX, y - _mouseY, image.UprightWidth, image.UprightHeight);
+            if (Comparing) CompareDrag(x, y, x - _mouseX, y - _mouseY);
+            else if (_shown is { HasSize: true } image) _view.Pan(x - _mouseX, y - _mouseY, image.UprightWidth, image.UprightHeight);
         }
         _mouseX = x;
         _mouseY = y;
         Invalidate(); // the readout under the cursor changed
     }
 
-    void OnKeyDown(VIRTUAL_KEY key)
+    /// <summary>The left button went down over the image: a drag pans it (or, when comparing, may move the divider).</summary>
+    void OnLeftDown(int x, int y)
+    {
+        _panning = true;
+        _mouseX = x;
+        _mouseY = y;
+        PInvoke.SetCapture(_hwnd);
+        if (!Comparing) return;
+        CompareMouseDown(x, y);
+        Invalidate();
+    }
+
+    void OnLeftUp()
+    {
+        _panning = false;
+        _dragDivider = false;
+        _dragItem = -1;
+        PInvoke.ReleaseCapture();
+    }
+
+    void OnKeyUp(VIRTUAL_KEY key)
+    {
+        if (!Comparing) return;
+        CompareKeyUp(key);
+        Invalidate();
+    }
+
+    /// <summary>Zooms at the centre of the view (of the pane, when comparing), to a factor of the image's size or by a factor of the current zoom.</summary>
+    void ZoomAtCentre(double value, bool absolute)
+    {
+        if (Comparing) CompareZoom(value, absolute);
+        else if (_shown is { HasSize: true }) _view.ZoomAt(absolute ? value : _view.Zoom * value, ViewWidth / 2.0, ViewHeight / 2.0, ViewWidth, ViewHeight);
+    }
+
+    /// <summary>Shows the whole image, or all of every compared image, and keeps it so when the window changes size.</summary>
+    void FitView()
+    {
+        if (Comparing)
+        {
+            _view.Fit = true;
+            foreach (CompareItem item in _compare) item.View.Fit = true; // laid out, and thereby fitted, before the next frame
+        }
+        else if (_shown is { HasSize: true } image)
+        {
+            _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+        }
+    }
+
+    void OnKeyDown(VIRTUAL_KEY key, bool repeat, bool shift, bool control)
     {
         if (_dialog != Dialog.None)
         {
@@ -1219,14 +1347,18 @@ internal sealed unsafe partial class MainWindow
             Invalidate();
             return;
         }
-        LoadedImage? image = _shown is { HasSize: true } ? _shown : null;
-        bool shift = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) < 0, control = PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) < 0;
+        if (Comparing && CompareKey(key, shift, control, repeat))
+        {
+            Invalidate();
+            return;
+        }
         switch (key)
         {
             case VIRTUAL_KEY.VK_ESCAPE:
                 if (_showKeys) _showKeys = false;
                 else if (_showSettings) _showSettings = false;
                 else if (_fullscreen) ToggleFullscreen();
+                else if (Comparing) StopCompare();
                 else PInvoke.PostMessage(_hwnd, PInvoke.WM_CLOSE, default, default);
                 break;
             case VIRTUAL_KEY.VK_F1:
@@ -1245,6 +1377,16 @@ internal sealed unsafe partial class MainWindow
                 if (shift) CopyPath();
                 else CopyImage();
                 break;
+            case VIRTUAL_KEY.VK_C:
+                ToggleCompare();
+                break;
+            case VIRTUAL_KEY.VK_H:
+            {
+                // Colour, red, green, blue, alpha, luma in turn; with Shift the other way round.
+                const int channels = (int)ChannelView.Luma + 1;
+                _display.Channel = (ChannelView)(((int)_display.Channel + (shift ? channels - 1 : 1)) % channels);
+                break;
+            }
             case VIRTUAL_KEY.VK_F11:
                 ToggleFullscreen();
                 break;
@@ -1255,16 +1397,16 @@ internal sealed unsafe partial class MainWindow
                 _showDisplayPanel = !_showDisplayPanel;
                 break;
             case VIRTUAL_KEY.VK_F or VIRTUAL_KEY.VK_0 or VIRTUAL_KEY.VK_NUMPAD0:
-                if (image != null) _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
+                FitView();
                 break;
-            case VIRTUAL_KEY.VK_1 or VIRTUAL_KEY.VK_NUMPAD1:
-                if (image != null) _view.ZoomAt(1, ViewWidth / 2.0, ViewHeight / 2.0, ViewWidth, ViewHeight);
+            case VIRTUAL_KEY.VK_1 or VIRTUAL_KEY.VK_NUMPAD1 or VIRTUAL_KEY.VK_Z: // while comparing, 1 to 9 are the images, and Z is 100 %
+                ZoomAtCentre(1, absolute: true);
                 break;
             case VIRTUAL_KEY.VK_OEM_PLUS or VIRTUAL_KEY.VK_ADD:
-                if (image != null) _view.ZoomAt(_view.Zoom * WheelZoomStep, ViewWidth / 2.0, ViewHeight / 2.0, ViewWidth, ViewHeight);
+                ZoomAtCentre(WheelZoomStep, absolute: false);
                 break;
             case VIRTUAL_KEY.VK_OEM_MINUS or VIRTUAL_KEY.VK_SUBTRACT:
-                if (image != null) _view.ZoomAt(_view.Zoom / WheelZoomStep, ViewWidth / 2.0, ViewHeight / 2.0, ViewWidth, ViewHeight);
+                ZoomAtCentre(1 / WheelZoomStep, absolute: false);
                 break;
             case VIRTUAL_KEY.VK_I:
                 if (control) SelectAll(invert: true);
@@ -1340,7 +1482,9 @@ internal sealed unsafe partial class MainWindow
             if (length > 0) files.Add(new string(buffer, 0, (int)length));
         }
         PInvoke.DragFinish(drop);
-        Open(files);
+        // With Ctrl held, what is dropped joins the comparison. The key's state is asked for
+        // directly: during a drag from another program this window receives no keyboard input.
+        Open(files, addToComparison: PInvoke.GetAsyncKeyState((int)VIRTUAL_KEY.VK_CONTROL) < 0);
     }
 
     void BringToFront()
@@ -1385,7 +1529,11 @@ internal sealed unsafe partial class MainWindow
             if (mouse || key || message == PInvoke.WM_MOUSELEAVE) Invalidate();
             // Input over a panel, or typed into one, belongs to the panel. A drag that started on
             // the image keeps going wherever the mouse is.
-            if (mouse && _ui.WantsMouse && !_panning) return default;
+            if (mouse && _ui.WantsMouse && !_panning)
+            {
+                _mouseX = _mouseY = -1; // the cursor is not over the image: no readout, no linked cursor
+                return default;
+            }
             if (key && _ui.WantsKeyboard) return default;
         }
 
@@ -1419,6 +1567,18 @@ internal sealed unsafe partial class MainWindow
             case WM_APP_TEST_OPEN_DIALOG:
                 OpenWithDialog(folder: wParam.Value != 0);
                 return default;
+            case WM_APP_TEST_MOUSE:
+            {
+                // Routed as the real messages are: to a panel if the mouse is over one, else to the image.
+                int x = LowWord(lParam.Value), y = HighWord(lParam.Value), button = (int)wParam.Value;
+                _ui?.TestMouse(x, y, button);
+                if (_ui is { WantsMouse: true } && !_panning) _mouseX = _mouseY = -1;
+                else if (button == 1) OnLeftDown(x, y);
+                else if (button == 2) OnLeftUp();
+                else OnMouseMove(x, y);
+                Invalidate();
+                return default;
+            }
             case WM_APP_RESET_STATISTICS:
                 _frames = _intervals = _thumbsUploaded = 0;
                 _frameCpuMs = _frameMaxCpuMs = _frameMaxMs = _intervalMs = _intervalMaxMs = 0;
@@ -1466,6 +1626,9 @@ internal sealed unsafe partial class MainWindow
                         PInvoke.KillTimer(hwnd, NoticeTimerId);
                         Invalidate(); // the notice has run out
                         break;
+                    case BlinkTimerId:
+                        OnBlinkTimer();
+                        break;
                 }
                 return default;
 
@@ -1476,17 +1639,18 @@ internal sealed unsafe partial class MainWindow
                 OnMouseMove(LowWord(lParam.Value), HighWord(lParam.Value));
                 return default;
             case PInvoke.WM_LBUTTONDOWN:
-                _panning = true;
-                _mouseX = LowWord(lParam.Value);
-                _mouseY = HighWord(lParam.Value);
-                PInvoke.SetCapture(hwnd);
+                OnLeftDown(LowWord(lParam.Value), HighWord(lParam.Value));
                 return default;
             case PInvoke.WM_LBUTTONUP:
-                _panning = false;
-                PInvoke.ReleaseCapture();
+                OnLeftUp();
                 return default;
             case PInvoke.WM_LBUTTONDBLCLK:
-                if (_shown is { HasSize: true } image)
+                if (Comparing)
+                {
+                    CompareDoubleClick(LowWord(lParam.Value), HighWord(lParam.Value));
+                    Invalidate();
+                }
+                else if (_shown is { HasSize: true } image)
                 {
                     if (_view.Fit || _view.Zoom != 1) _view.ZoomAt(1, LowWord(lParam.Value) - ViewX, HighWord(lParam.Value) - ViewY, ViewWidth, ViewHeight);
                     else _view.FitTo(image.UprightWidth, image.UprightHeight, ViewWidth, ViewHeight);
@@ -1494,12 +1658,24 @@ internal sealed unsafe partial class MainWindow
                 }
                 return default;
             case PInvoke.WM_RBUTTONUP:
+                if (Comparing) CompareRightClick(LowWord(lParam.Value), HighWord(lParam.Value));
                 _viewMenuRequested = true; // a right click on the image
                 Invalidate();
                 return default;
             case PInvoke.WM_KEYDOWN:
-                OnKeyDown((VIRTUAL_KEY)(ushort)wParam.Value);
+                OnKeyDown((VIRTUAL_KEY)(ushort)wParam.Value, repeat: (lParam.Value & (1 << 30)) != 0,
+                    shift: PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) < 0, control: PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) < 0);
                 return default;
+            case WM_APP_TEST_KEY:
+                if ((lParam.Value & 4) != 0) OnKeyUp((VIRTUAL_KEY)(ushort)wParam.Value);
+                else OnKeyDown((VIRTUAL_KEY)(ushort)wParam.Value, repeat: false, shift: (lParam.Value & 1) != 0, control: (lParam.Value & 2) != 0);
+                return default;
+            case PInvoke.WM_KEYUP:
+                OnKeyUp((VIRTUAL_KEY)(ushort)wParam.Value);
+                return default;
+            case PInvoke.WM_KILLFOCUS:
+                _pick.ForgetPress(); // the release of a held number key goes to whoever has the keyboard now
+                break;
 
             case PInvoke.WM_DROPFILES:
                 OnDropFiles(new HDROP((void*)wParam.Value));
