@@ -9,11 +9,10 @@ namespace Fiv.Bench;
 ///   single\   one file per format and size, for open and decode timing
 ///   compare\  one scene in versions to compare, and an image with transparency
 ///   series\   distinct 12 MP JPEGs, for navigation timing
-///   folders\  1k / 10k / 100k small files with camera-like names, for index timing
 /// </summary>
 public static unsafe class CorpusCommand
 {
-    public static int Run(string root, bool skipFolders)
+    public static int Run(string root)
     {
         var total = Stopwatch.StartNew();
         string single = Directory.CreateDirectory(Path.Combine(root, "single")).FullName;
@@ -84,13 +83,6 @@ public static unsafe class CorpusCommand
             }
         }
         Console.WriteLine($"series\\jpeg_12mp_x3: 120 files, {FolderSize(tripled) / 1e6:F0} MB");
-
-        if (!skipFolders)
-        {
-            Folder(Path.Combine(root, "folders", "1k"), 1_000);
-            Folder(Path.Combine(root, "folders", "10k"), 10_000);
-            Folder(Path.Combine(root, "folders", "100k"), 100_000);
-        }
         Console.WriteLine($"corpus ready in {total.Elapsed.TotalSeconds:F0} s: {root}");
         return 0;
     }
@@ -178,47 +170,4 @@ public static unsafe class CorpusCommand
     }
 
     static long FolderSize(string folder) => new DirectoryInfo(folder).EnumerateFiles().Sum(f => f.Length);
-
-    /// <summary>
-    /// A folder of small files named the way cameras, phones and scanners name them. Numbers are
-    /// not zero-padded in part of the names, so that natural and ordinal sort orders differ.
-    /// </summary>
-    static void Folder(string folder, int count)
-    {
-        if (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Take(count).Count() >= count) return;
-        Directory.CreateDirectory(folder);
-        var sw = Stopwatch.StartNew();
-
-        var blobs = new byte[16][];
-        for (int i = 0; i < blobs.Length; i++)
-        {
-            using var image = SyntheticImage.Create(160, 120, 1000 + i, marker: false);
-            blobs[i] = ImageWriters.EncodeJpeg(image.Bgra, image.Stride, image.Width, image.Height, 80, TurboJpeg.Subsampling.S420);
-        }
-        string pngPath = Path.Combine(folder, "_tmp.png");
-        using (var image = SyntheticImage.Create(160, 120, 2000, marker: false))
-            ImageWriters.WritePng(pngPath, image.Bgra, image.Stride, image.Width, image.Height, ImageWriters.PngKind.Rgb8);
-        byte[] png = File.ReadAllBytes(pngPath);
-        File.Delete(pngPath);
-
-        var random = new Random(count);
-        var start = new DateTime(2019, 1, 1, 8, 0, 0, DateTimeKind.Utc);
-        Parallel.For(0, count, new ParallelOptions { MaxDegreeOfParallelism = 8 }, i =>
-        {
-            int kind = i % 20;
-            (string name, byte[] data) = kind switch
-            {
-                < 11 => ($"IMG_{i}.jpg", blobs[i % blobs.Length]),
-                < 15 => ($"DSC{i:D6}.JPG", blobs[i % blobs.Length]),
-                < 17 => ($"PXL_{start.AddMinutes(i):yyyyMMdd_HHmmss}{i % 1000:D3}.jpg", blobs[i % blobs.Length]),
-                17 => ($"scan {i}.png", png),
-                18 => ($"Screenshot ({i}).png", png),
-                _ => ($"IMG_{i}.xmp", "<x:xmpmeta/>"u8.ToArray()),
-            };
-            string path = Path.Combine(folder, name);
-            File.WriteAllBytes(path, data);
-            File.SetLastWriteTimeUtc(path, start.AddSeconds((long)i * 37 % 150_000_000));
-        });
-        Console.WriteLine($"folders\\{Path.GetFileName(folder)}: {count} files in {sw.Elapsed.TotalSeconds:F0} s");
-    }
 }

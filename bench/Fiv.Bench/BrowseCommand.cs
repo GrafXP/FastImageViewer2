@@ -6,13 +6,12 @@ namespace Fiv.Bench;
 
 /// <summary>
 /// The folder panel of the real viewer: how long until the first screenful of thumbnails is
-/// complete for a folder never seen (thumbnails have to be made), for the same folder in a later
-/// run (they come from the pack on disk), and whether a folder of 95,000 images scrolls at the
-/// screen's refresh rate while its thumbnails stream in.
+/// complete for a folder never seen (thumbnails have to be made), and for the same folder in a
+/// later run (they come from the pack on disk).
 /// </summary>
 public static partial class BrowseCommand
 {
-    const uint WM_MOUSEMOVE = 0x0200, WM_MOUSEWHEEL = 0x020A, WM_CLOSE = 0x0010, WM_APP_RESET_STATISTICS = 0x8000 + 20;
+    const uint WM_CLOSE = 0x0010;
 
     [LibraryImport("user32", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint FindWindowW(string className, string? windowName);
@@ -28,14 +27,13 @@ public static partial class BrowseCommand
             Console.Error.WriteLine($"missing {exe}; run build.ps1 first");
             return 1;
         }
-        string start = Path.Combine(corpus, "folders", "1k", "IMG_0.jpg");
+        string start = Path.Combine(corpus, "series", "jpeg_12mp", "IMG_0001.jpg");
         (string Path, string Label)[] folders =
         [
             (Path.Combine(corpus, "series", "jpeg_12mp_x3"), "120 JPEGs of 12 MP"),
             (Path.Combine(corpus, "series", "jpeg_12mp_exif"), "40 JPEGs of 12 MP with embedded thumbnails"),
         ];
-        string big = Path.Combine(corpus, "folders", "100k");
-        if (!File.Exists(start) || folders.Any(f => !Directory.Exists(f.Path)) || !Directory.Exists(big))
+        if (!File.Exists(start) || folders.Any(f => !Directory.Exists(f.Path)))
         {
             Console.Error.WriteLine("corpus incomplete; run 'fivbench corpus'");
             return 1;
@@ -62,7 +60,6 @@ public static partial class BrowseCommand
                 }
             }
             // Run 2, same profile: the packs are on disk.
-            string scroll;
             using (var viewer = Viewer.Start(exe, start, profile))
             {
                 if (viewer == null) return 1;
@@ -72,33 +69,7 @@ public static partial class BrowseCommand
                     if (screen == null) return 1;
                     Row(sb, label, "seen before", screen);
                 }
-
-                var first = viewer.OpenFolder(exe, big);
-                if (first == null) return 1;
-                Row(sb, "95,000 small images", "new", first);
-
-                // Wheel down through the folder for four seconds, 60 notches a second.
-                nint window = viewer.Window;
-                PostMessageW(window, WM_MOUSEMOVE, 0, (300 << 16) | 150);
-                Thread.Sleep(300);
-                PostMessageW(window, WM_APP_RESET_STATISTICS, 0, 0); // count only the scrolling
-                var watch = Stopwatch.StartNew();
-                const int notches = 240;
-                for (int i = 0; i < notches; i++)
-                {
-                    PostMessageW(window, WM_MOUSEWHEEL, unchecked((nint)(-120 << 16)), 0);
-                    double next = (i + 1) * (1000.0 / 60);
-                    while (watch.Elapsed.TotalMilliseconds < next) Thread.SpinWait(200);
-                }
-                Thread.Sleep(1500);
-                scroll = viewer.Close();
             }
-            string Field(string name) => scroll.Split(' ').Select(f => f.Split('=', 2)).FirstOrDefault(f => f.Length == 2 && f[0] == name)?[1] ?? "?";
-            sb.AppendLine();
-            sb.AppendLine("Scrolling the folder of 95,000 with the mouse wheel for 4 s (60 notches per second) while thumbnails are made:");
-            sb.AppendLine();
-            sb.AppendLine($"{Field("frames")} frames, {Field("interval_mean_ms")} ms between frames on average, {Field("interval_max_ms")} ms at most; " +
-                          $"{Field("cpu_mean_ms")} ms of CPU per frame on average, {Field("cpu_max_ms")} ms at most; {Field("thumbs_uploaded")} thumbnails made and shown while scrolling.");
         }
         finally
         {
@@ -136,7 +107,7 @@ public static partial class BrowseCommand
             _log = log;
         }
 
-        public nint Window => FindWindowW("FastImageViewer2." + _instance, null);
+        nint Window => FindWindowW("FastImageViewer2." + _instance, null);
 
         public static Viewer? Start(string exe, string file, string profile)
         {
@@ -191,14 +162,6 @@ public static partial class BrowseCommand
             using var stream = new FileStream(_log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             using var reader = new StreamReader(stream);
             return reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        }
-
-        /// <summary>Closes the viewer and returns its closing statistics line.</summary>
-        public string Close()
-        {
-            PostMessageW(Window, WM_CLOSE, 0, 0);
-            if (!_process.WaitForExit(8000)) _process.Kill();
-            return Lines().LastOrDefault(l => l.StartsWith("images_shown=")) ?? "";
         }
 
         public void Dispose()

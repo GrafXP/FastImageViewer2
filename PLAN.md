@@ -160,8 +160,11 @@ previews (for real camera files) and a smaller hand-over process.
 
 ### 2.3 Measured in M2: navigation, index, and the viewer on its new pipeline
 
-Same machine and corpus; the machine was in use. Reproduce with `fivbench navigate`, `index`,
-`open` and `reopen`. Times end when `Present` returns; the frame is on screen at the next refresh.
+Same machine and corpus; the machine was in use. Reproduce with `fivbench navigate`, `open` and
+`reopen`. Times end when `Present` returns; the frame is on screen at the next refresh.
+The folder index and header probe numbers below cannot be re-run: they came from `fivbench index`
+on generated folders of 1,000, 10,000 and 100,000 files, and both were removed on 2026-10-10
+(111,000 files in the project were more than the backup could take).
 
 **Navigation**, folder of 40 different 12 MP JPEGs (about 3 MB each):
 
@@ -504,7 +507,8 @@ Each milestone ends with its exit criteria measured and written back into this f
 **M0 — Bake-off, skeleton, measurement**
 - `git init`; solution skeleton; build libjpeg-turbo static library.
 - Language bake-off described in 3.1 (C# Native AOT vs C++). Decide and record.
-- Test corpus: generated folders of 1k / 10k / 100k files; JPEG at 12 / 24 / 50 MP; PNG 8- and
+- Test corpus: generated folders of 1k / 10k / 100k files (removed again on 2026-10-10, see
+  section 2.3); JPEG at 12 / 24 / 50 MP; PNG 8- and
   16-bit; TIFF 16-bit and float; WebP; one image wider than 16384 px. Plus a real folder of yours.
 - Time-to-first-pixel harness; decoder benchmarks (libjpeg-turbo at each scale, WIC per format,
   candidate PNG decoders); enumeration and sort benchmarks.
@@ -587,7 +591,9 @@ while shown; sorting by date.
   stream in.
 
 *State 2026-10-10: built and measured; three of four exit budgets met, some items untested.*
-Reproduce with `fivbench browse` and `fivbench thumbs`.
+Reproduce with `fivbench browse` and `fivbench thumbs`. The scrolling row and the 95,000-image
+listing time cannot be re-run: that part of `fivbench browse` was removed on 2026-10-10 with the
+generated 100k folder (see section 2.3).
 
 | Budget | Result |
 |---|---|

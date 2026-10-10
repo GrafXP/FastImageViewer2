@@ -94,13 +94,12 @@ in that mode instead of the one used last.
 ```powershell
 dotnet build bench\Fiv.Bench -c Release
 $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
-& $bench corpus      # generate the test images into corpus\ (about 1 GB, 2 minutes)
+& $bench corpus      # generate the test images into corpus\ (220 files, about 0.9 GB, half a minute)
 & $bench open        # cold start of the viewer, stage by stage
 & $bench reopen      # open with the viewer already running
 & $bench navigate    # next/previous in a folder: single steps, and the arrow key held
-& $bench index       # folder read and sort for 1k / 10k / 100k files, header probes
 & $bench thumbs      # making thumbnails, and reading them back from the cache
-& $bench browse      # folder panel: first screen of thumbnails, scrolling 95,000 images
+& $bench browse      # folder panel: first screen of thumbnails, new and seen before
 & $bench compare     # compare modes: loading a set, zoom and pan in each mode, switching
 & $bench decode      # decoder timings
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)
