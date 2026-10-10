@@ -42,6 +42,9 @@ internal sealed unsafe partial class MainWindow
 
         /// <summary>Where the file is in the list that next and previous walk, or -1.</summary>
         public int ListPosition = -1;
+
+        /// <summary>Its values are among those a measurement shows: the plot of a line, the histogram and the numbers of an area (see MainWindow.Measure).</summary>
+        public bool Measured = true;
     }
 
     /// <summary>A rectangle of the view and the one or two images of the set shown in it.</summary>

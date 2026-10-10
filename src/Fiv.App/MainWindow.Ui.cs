@@ -94,6 +94,11 @@ internal sealed unsafe partial class MainWindow
             DrawSinglePixelValues();
             DrawSingleLabel();
         }
+        if (_measure)
+        {
+            DrawMeasurePanel(); // first: it knows which point of a line the mouse is at in the plot, which is marked on the image
+            DrawMeasurements();
+        }
         if (_showPerf) DrawPerfOverlay();
         if (_showDisplayPanel) DrawDisplayPanel();
         if (_showKeys) DrawKeys();

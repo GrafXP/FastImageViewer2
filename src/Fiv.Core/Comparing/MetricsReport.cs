@@ -36,10 +36,10 @@ public static class MetricsReport
     }
 
     /// <summary>Nine significant digits; "inf" for the PSNR of identical images, nothing where a number is not defined.</summary>
-    static string Number(double value) =>
+    internal static string Number(double value) =>
         double.IsNaN(value) ? "" : double.IsPositiveInfinity(value) ? "inf" : double.IsNegativeInfinity(value) ? "-inf" : value.ToString("G9", CultureInfo.InvariantCulture);
 
-    static string Quote(string text) => text.AsSpan().IndexOfAny(",\"\r\n") < 0 ? text : "\"" + text.Replace("\"", "\"\"") + "\"";
+    internal static string Quote(string text) => text.AsSpan().IndexOfAny(",\"\r\n") < 0 ? text : "\"" + text.Replace("\"", "\"\"") + "\"";
 
     /// <summary>One object: what was compared, and the numbers by channel. JSON has no infinity: the PSNR of identical images is null, and "identical" says why.</summary>
     public static string Json(MetricsResult result, string first, string second, double threshold)

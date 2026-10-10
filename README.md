@@ -54,6 +54,21 @@ when part of the picture has changed or moved on its own. Everything follows the
 two-image views, the pixel readouts, the numbers and the saved files. The aligned image itself
 can be saved, on the pixel grid of the image it was aligned to.
 
+An image can be measured, with `U`: lines, rectangles and circles are drawn on it with the
+mouse and listed in a panel. A line has its length, how far it goes across and down, and its
+direction; the panel plots the values of the image along it, and the mouse over the plot reads
+them at a point, which is marked on the image. A rectangle or a circle has its size and area,
+and of the pixels inside it the mean, spread, smallest, largest and median value and a
+histogram, for every channel. All of these are taken from the full-resolution pixels as the
+file has them, not from the screen. The measurements stay where they are when the image
+changes, so the same line or area can be looked at in every image of a folder; in a comparison
+they are drawn in every pane, and the plot, the histogram and the tables show every image of
+the set, each drawn with a line style of its own and each with a tick in the panel that
+switches it off and on. Given a scale (what one pixel is long in a unit of yours, typed, or
+worked out from a line of known length), sizes are shown in that unit as well. The list, the
+values along a line, and the numbers and the histogram of an area can be saved as CSV. The
+panel is a window like the folder panel: it can be moved, made any size, and docked at an edge.
+
 | Input | Action |
 |---|---|
 | `Right` / `Space` / `PgDn`, `Left` / `Backspace` / `PgUp` | next, previous image |
@@ -77,6 +92,7 @@ can be saved, on the pixel grid of the image it was aligned to.
 | `D` | display panel: black point, white point, gamma, exposure, channel |
 | `H`, `Shift+H` | show colour, red, green, blue, alpha, luma in turn |
 | `V` | write the pixel values into the pixels once they are large enough on screen (zoom goes to 25600 %) |
+| `U` | measure: lines, rectangles and circles on the image, and the panel with their numbers (below) |
 | `F11` | fullscreen |
 | `F12` | timing overlay: start-up, this image, navigation, cache, folder index |
 | `Esc` | leave fullscreen, stop comparing, or quit |
@@ -126,6 +142,32 @@ Aligning the second image of the pair to the first:
 | `Ctrl+E` | save the aligned image: PNG, or 32-bit float TIFF for float images; transparent where it has no pixel |
 | `A` or `Esc` | leave align mode; the image stays where it was put |
 
+Measuring, on one image or while comparing:
+
+| Input | Action |
+|---|---|
+| `U` | the measurements and their panel, on or off; they are kept while they are off |
+| `L`, `R`, `C`, then a drag | draw a line, a rectangle, a circle from its centre. While the measurements are on, these three keys choose a shape instead of what they do otherwise |
+| `Shift`+drag | the line level, upright or diagonal; the rectangle a square |
+| Drag a handle | change a measurement: an end of a line, a corner or a side of a rectangle, the outline of a circle |
+| Drag a line, a rectangle's outline, a circle's centre | move it |
+| Click a measurement, or its row in the panel | select it: the panel shows its numbers, and the values along the line or the histogram of the area |
+| The numbers in the panel | type or step the position and size of the selected measurement |
+| Mouse over the plot or the histogram | the last column of the table under it shows the values at that point of the line, which is marked on the image, or the number of pixels with that value |
+| The ticks by the images' names (while comparing) | which images of the set the plot, the histogram and the tables show; the first one ticked is drawn solid and its histogram filled, the others dashed, dotted and so on |
+| Drag the panel's title bar, its edges or corner | move it, or dock it where the markers show; resize it. What is in it follows its width |
+| `H`, `Shift+H` | the channel the plot and the histogram show, as for the image |
+| `Del` | delete the selected measurement (while the measurements are on, `Del` does not delete the file) |
+| `Esc` | give up the shape chosen; again: put the measurements away |
+| "Scale" in the panel | what one pixel is long, and in which unit; or the known length of the selected line, from which that is worked out |
+| Buttons in the panel | save the list, the profile of the line, or the numbers and the histogram of the area, as CSV |
+
+A line is where the mouse puts it: zoomed out its ends lie on the centres of pixels, zoomed in
+they follow the mouse to the fraction of a pixel the screen shows. Along it there is a sample
+every pixel of length, blended from the four pixels around its point, so a line along a row or
+a column through pixel centres gives the stored values exactly. A rectangle holds whole pixels;
+a pixel belongs to a circle if its centre is inside.
+
 The status bar shows position in the folder, file, size, zoom, and the coordinates and stored
 values of the pixel under the cursor (16-bit and float values as they are in the file). The
 name and size are also written into the top left corner of the image, on its own as in every
@@ -171,6 +213,7 @@ $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
 & $bench compare     # compare modes: loading a set, zoom and pan in each mode, switching
 & $bench metrics     # comparing on the CPU: error metrics, structural similarity, saving the views
 & $bench align       # aligning two images: time, and how close to known moves, turns and scalings
+& $bench measure     # measuring: the numbers of an area and the values along a line
 & $bench decode      # decoder timings
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)
 ```

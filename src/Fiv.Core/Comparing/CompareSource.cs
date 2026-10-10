@@ -236,6 +236,37 @@ public sealed unsafe class CompareSource
         }
     }
 
+    /// <summary>
+    /// The image at any point of the canvas, not only at the centre of a pixel: R, G, B, A in
+    /// stored units, blended from the four stored pixels around the point as on screen. At the
+    /// centre of a stored pixel that is the pixel's own values exactly. False, and nothing
+    /// written, where the image has no pixel.
+    /// </summary>
+    public bool Sample(double x, double y, float* color)
+    {
+        DecodedImage image = Image;
+        (double sx, double sy) = _toStored.Apply(x, y);
+        if (!(sx >= 0 && sy >= 0 && sx <= image.Width && sy <= image.Height)) return false;
+        // Sample positions are pixel centres: the stored pixel k is at k + 0.5.
+        double fx = sx - 0.5, fy = sy - 0.5;
+        int x0 = (int)Math.Floor(fx), y0 = (int)Math.Floor(fy);
+        float tx = (float)(fx - x0), ty = (float)(fy - y0);
+        int x1 = Math.Clamp(x0 + 1, 0, image.Width - 1), y1 = Math.Clamp(y0 + 1, 0, image.Height - 1);
+        x0 = Math.Clamp(x0, 0, image.Width - 1);
+        y0 = Math.Clamp(y0, 0, image.Height - 1);
+        float* c = stackalloc float[16];
+        Fetch(x0, y0, c);
+        Fetch(x1, y0, c + 4);
+        Fetch(x0, y1, c + 8);
+        Fetch(x1, y1, c + 12);
+        for (int i = 0; i < 4; i++)
+        {
+            float upper = c[i] + (c[4 + i] - c[i]) * tx, lower = c[8 + i] + (c[12 + i] - c[8 + i]) * tx;
+            color[i] = upper + (lower - upper) * ty;
+        }
+        return true;
+    }
+
     /// <summary>One stored pixel as R, G, B, A in stored units.</summary>
     void Fetch(int x, int y, float* color)
     {

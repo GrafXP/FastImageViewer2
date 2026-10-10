@@ -53,6 +53,12 @@ public sealed class Settings
     /// <summary>What the automatic alignment may do to an image: move it, turn it, scale it.</summary>
     public AlignModel AlignModel = AlignModel.ShiftRotationScale;
 
+    // Measuring: the scale, as what one pixel is long in a unit (0: lengths are in pixels only),
+    // and whether the histogram of an area counts on a logarithmic scale.
+    public double MeasurePixelSize;
+    public string MeasureUnit = "mm";
+    public bool HistogramLog;
+
     /// <summary>Moves an entry to the front of a recent list, case-insensitively, and trims the list.</summary>
     public static void Remember(List<string> list, string path)
     {
@@ -127,6 +133,14 @@ public sealed class Settings
                     case "showMetrics": settings.ShowMetrics = reader.GetBoolean(); break;
                     case "pixelValues": settings.PixelValues = reader.GetBoolean(); break;
                     case "alignModel": settings.AlignModel = Enum.TryParse(reader.GetString(), true, out AlignModel model) && Enum.IsDefined(model) ? model : AlignModel.ShiftRotationScale; break;
+                    case "measurePixelSize":
+                    {
+                        double size = reader.GetDouble();
+                        settings.MeasurePixelSize = double.IsFinite(size) && size > 0 ? size : 0;
+                        break;
+                    }
+                    case "measureUnit": settings.MeasureUnit = reader.GetString() is { } unit && unit.Length <= 16 ? unit : "mm"; break;
+                    case "histogramLog": settings.HistogramLog = reader.GetBoolean(); break;
                     default: reader.Skip(); break; // a setting of a newer version: leave it
                 }
             }
@@ -209,6 +223,9 @@ public sealed class Settings
                 writer.WriteBoolean("showMetrics", ShowMetrics);
                 writer.WriteBoolean("pixelValues", PixelValues);
                 writer.WriteString("alignModel", AlignModel.ToString());
+                writer.WriteNumber("measurePixelSize", MeasurePixelSize);
+                writer.WriteString("measureUnit", MeasureUnit);
+                writer.WriteBoolean("histogramLog", HistogramLog);
                 writer.WriteEndObject();
             }
             // Written whole or not at all: to a temporary file first, then renamed over the old one.

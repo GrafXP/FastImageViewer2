@@ -152,6 +152,10 @@ internal sealed unsafe partial class MainWindow
         _showMetrics = settings.ShowMetrics;
         _pixelValues = settings.PixelValues;
         _alignModel = settings.AlignModel;
+        _pixelSize = settings.MeasurePixelSize;
+        _unit = settings.MeasureUnit;
+        System.Text.Encoding.UTF8.GetBytes(_unit, _unitBuffer.AsSpan(0, _unitBuffer.Length - 1));
+        _histogramLog = settings.HistogramLog;
         _files.AddRange(options.Files);
         _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE),
             (long)(options.CacheMb ?? settings.CacheMb) << 20, (long)(options.VramMb ?? settings.VramMb) << 20);
@@ -1351,7 +1355,8 @@ internal sealed unsafe partial class MainWindow
     {
         if (_panning)
         {
-            if (Comparing) CompareDrag(x, y, x - _mouseX, y - _mouseY);
+            if (_dragMeasure) MeasureDrag(x, y);
+            else if (Comparing) CompareDrag(x, y, x - _mouseX, y - _mouseY);
             else if (_shown is { HasSize: true } image) _view.Pan(x - _mouseX, y - _mouseY, image.UprightWidth, image.UprightHeight);
         }
         _mouseX = x;
@@ -1360,8 +1365,9 @@ internal sealed unsafe partial class MainWindow
     }
 
     /// <summary>
-    /// The left button went down over the image: a drag pans it. When comparing it may instead
-    /// move the divider, or, with Shift held or after R, draw the region the numbers are taken over.
+    /// The left button went down over the image: a drag pans it. While measuring it may instead
+    /// draw a measurement or change one; when comparing, move the divider, or, with Shift held
+    /// or after R, draw the region the numbers are taken over.
     /// </summary>
     void OnLeftDown(int x, int y, bool shift)
     {
@@ -1369,6 +1375,11 @@ internal sealed unsafe partial class MainWindow
         _mouseX = x;
         _mouseY = y;
         PInvoke.SetCapture(_hwnd);
+        if (MeasureMouseDown(x, y, shift))
+        {
+            Invalidate();
+            return;
+        }
         if (!Comparing) return;
         CompareMouseDown(x, y, shift);
         Invalidate();
@@ -1379,6 +1390,7 @@ internal sealed unsafe partial class MainWindow
         _panning = false;
         _dragDivider = false;
         _dragAlign = false;
+        EndMeasureDrag();
         EndRegion();
         _dragItem = -1;
         PInvoke.ReleaseCapture();
@@ -1422,7 +1434,8 @@ internal sealed unsafe partial class MainWindow
             Invalidate();
             return;
         }
-        if (Comparing && CompareKey(key, shift, control, repeat))
+        // While the measurements are on show, a few keys are theirs before they are the comparison's or the viewer's.
+        if (MeasureKey(key, shift, control) || (Comparing && CompareKey(key, shift, control, repeat)))
         {
             Invalidate();
             return;
@@ -1793,8 +1806,10 @@ internal sealed unsafe partial class MainWindow
             case PInvoke.WM_DESTROY:
                 WriteStatistics();
                 SaveSettings();
+                _ui?.SaveLayout();
                 _metricsCancel?.Cancel();
                 _alignCancel?.Cancel();
+                _areaCancel?.Cancel();
                 StopWatching();
                 _thumbs?.Dispose();
                 _pendingPack?.Dispose();

@@ -79,6 +79,18 @@ internal sealed unsafe class Ui : IDisposable
         if (button != 0) io.AddMouseButtonEvent(0, button == 1);
     }
 
+    /// <summary>
+    /// Writes where the panels are, and which are docked where, to the layout file now. ImGui
+    /// writes it by itself only in a frame drawn five seconds or more after a change, and this
+    /// viewer draws no frames while nothing happens: a panel docked just before closing would be forgotten.
+    /// </summary>
+    public void SaveLayout()
+    {
+        ImGui.SetCurrentContext(_context);
+        byte* file = ImGui.GetIO().IniFilename;
+        if (file != null) ImGui.SaveIniSettingsToDisk(file);
+    }
+
     public void NewFrame()
     {
         ImGuiImplD3D11.NewFrame();

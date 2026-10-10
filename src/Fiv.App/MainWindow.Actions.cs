@@ -52,6 +52,16 @@ internal sealed unsafe partial class MainWindow
         ("Right click", "menu"),
         ("Esc", "close a dialog, leave fullscreen, stop comparing, or quit"),
         ("", ""),
+        ("U", "measure: lines, rectangles and circles on the image, and a panel with their numbers; again to put them away"),
+        ("While measuring", ""),
+        ("L / R / C", "then a drag: a line / a rectangle / a circle (from its centre)"),
+        ("Shift+drag", "the line level, upright or diagonal; the rectangle a square"),
+        ("Drag a handle / the outline", "change a measurement / move it (a circle: by its centre)"),
+        ("Click a measurement", "select it: a line shows the values along it, an area its numbers and histogram"),
+        ("Del / Esc", "delete the selected measurement / give up the shape chosen, then put the measurements away"),
+        ("H", "the channel the plot and the histogram show, as for the image"),
+        ("Ticks in the panel", "while comparing: which images of the set the plot, the histogram and the tables show"),
+        ("", ""),
         ("C", "compare the selected images, or this one with the next; again to stop"),
         ("Drop 2 to 16 files", "compare them; with Ctrl held, add them to the comparison"),
         ("While comparing", ""),
@@ -264,6 +274,7 @@ internal sealed unsafe partial class MainWindow
         if (ImGui.MenuItem("Filmstrip"u8, "T"u8, _showFilmstrip)) _showFilmstrip = !_showFilmstrip;
         if (ImGui.MenuItem("Display panel"u8, "D"u8, _showDisplayPanel)) _showDisplayPanel = !_showDisplayPanel;
         if (ImGui.MenuItem("Pixel values at high zoom"u8, "V"u8, _pixelValues)) _pixelValues = !_pixelValues;
+        if (ImGui.MenuItem("Measure: lines, rectangles, circles"u8, "U"u8, _measure)) SetMeasure(!_measure);
         if (ImGui.MenuItem("Labels"u8, default(ReadOnlySpan<byte>), _paneLabels)) _paneLabels = !_paneLabels;
         if (ImGui.MenuItem("Timing overlay"u8, "F12"u8, _showPerf)) _showPerf = !_showPerf;
         if (ImGui.MenuItem("Fullscreen"u8, "F11"u8, _fullscreen)) _deferred = ToggleFullscreen;
@@ -535,6 +546,9 @@ internal sealed unsafe partial class MainWindow
         _settings.ShowMetrics = _showMetrics;
         _settings.PixelValues = _pixelValues;
         _settings.AlignModel = _alignModel;
+        _settings.MeasurePixelSize = _pixelSize;
+        _settings.MeasureUnit = _unit.Length <= 16 ? _unit : "mm";
+        _settings.HistogramLog = _histogramLog;
         _settings.Save(Path.Combine(_options.ProfileDir, "settings.json"));
     }
 }
