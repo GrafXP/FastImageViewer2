@@ -634,7 +634,7 @@ internal sealed unsafe partial class MainWindow
 
     bool NearDivider(int x, int y)
     {
-        if (_compareMode != CompareMode.Split || _paneCount == 0) return false;
+        if (_compareMode != CompareMode.Split || _paneCount == 0 || _surface) return false;
         PaneRect pane = _panes[0].Rect;
         if (!pane.Contains(x, y)) return false;
         float distance = _splitRows ? y - pane.Y - DividerAt(pane) : x - pane.X - DividerAt(pane);
@@ -645,7 +645,7 @@ internal sealed unsafe partial class MainWindow
     bool TryGetCursorCanvas(out double x, out double y)
     {
         x = y = 0;
-        if (_canvasWidth <= 0) return false;
+        if (_canvasWidth <= 0 || SurfaceOnShow) return false; // in 3D the canvas is not where the flat panes would have it
         int p = PaneAt(_mouseX, _mouseY);
         if (p < 0 || _panes[p].First < 0) return false;
         (x, y) = CanvasToScreen(_panes[p].First, _panes[p].Rect).Inverse().Apply(_mouseX + 0.5, _mouseY + 0.5);
@@ -681,6 +681,11 @@ internal sealed unsafe partial class MainWindow
         {
             Pane pane = _panes[p];
             PaneRect r = pane.Rect;
+            if (SurfaceOnShow)
+            {
+                RenderSurfacePane(pane);
+                continue;
+            }
             if (pane.Second < 0)
             {
                 if (Drawable(pane.First) is not { } texture) continue;
@@ -875,9 +880,9 @@ internal sealed unsafe partial class MainWindow
                 DrawPaneState(draw, pane.First, r);
                 if (pane.First >= 0)
                 {
-                    if (_pixelValues && _compare[pane.First].Image is { HasSize: true } image)
+                    if (_pixelValues && !_surface && _compare[pane.First].Image is { HasSize: true } image)
                         DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight, image, ImageToCanvas(pane.First).Inverse(), null, Affine2.Identity);
-                    DrawRegion(draw, pane.First, r, scale);
+                    if (!_surface) DrawRegion(draw, pane.First, r, scale);
                     DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: false);
                     if (_linkedCursor && cursor && p != hovered)
                     {
@@ -889,18 +894,18 @@ internal sealed unsafe partial class MainWindow
             }
             else
             {
-                // Two images in the pane: the first is named in the left corner, the second in the right one.
-                if (_pixelValues && pane.First >= 0 && pane.Second >= 0 &&
+                // Two images in the pane: the first is named in the left corner, the second in the right one (below the 3D button).
+                if (_pixelValues && !_surface && pane.First >= 0 && pane.Second >= 0 &&
                     _compare[pane.First].Image is { HasSize: true } imageA && _compare[pane.Second].Image is { HasSize: true } imageB)
                 {
                     DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight,
                         imageA, ImageToCanvas(pane.First).Inverse(), imageB, ImageToCanvas(pane.Second).Inverse());
                 }
-                DrawRegion(draw, pane.First, r, scale);
+                if (!_surface) DrawRegion(draw, pane.First, r, scale);
                 DrawPaneState(draw, pane.First, r, pane.Second);
                 DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: true);
-                DrawImagePlates(draw, pane.Second, r.Right - margin, r.Y + margin, fromRight: true, numbered: true);
-                if (_compareMode == CompareMode.Split) DrawDivider(draw, r, scale);
+                DrawImagePlates(draw, pane.Second, r.Right - margin, MathF.Max(r.Y + margin, _surfacePanelBottom + margin), fromRight: true, numbered: true);
+                if (_compareMode == CompareMode.Split && !_surface) DrawDivider(draw, r, scale);
                 if (_compareMode is CompareMode.Difference or CompareMode.Ssim)
                 {
                     DrawColorBar(draw, r, scale);
@@ -1186,6 +1191,11 @@ internal sealed unsafe partial class MainWindow
     bool CompareKey(VIRTUAL_KEY key, bool shift, bool control, bool repeat)
     {
         if (control) return false;
+        if (shift && key is VIRTUAL_KEY.VK_3 or VIRTUAL_KEY.VK_NUMPAD3)
+        {
+            ToggleSurface(); // 3 alone is the third image
+            return true;
+        }
         int digit = key is >= VIRTUAL_KEY.VK_1 and <= VIRTUAL_KEY.VK_9 ? key - VIRTUAL_KEY.VK_1
             : key is >= VIRTUAL_KEY.VK_NUMPAD1 and <= VIRTUAL_KEY.VK_NUMPAD9 ? key - VIRTUAL_KEY.VK_NUMPAD1 : -1;
         if (digit >= 0)

@@ -59,6 +59,14 @@ public sealed class Settings
     public string MeasureUnit = "mm";
     public bool HistogramLog;
 
+    // The 3D height map: how high white stands (a share of the image's long side), the smoothing
+    // of the heights (a radius in values of the height grid), how many cells the mesh has along
+    // the long side, how much the light shades it, and in which colours it is drawn.
+    public float SurfaceRelief = 0.15f, SurfaceShading = 0.8f;
+    public int SurfaceSmoothing = 2, SurfaceMesh = 1024;
+    public bool SurfaceInvert, SurfaceWireframe, SurfaceByHeight;
+    public Colormap SurfaceMap = Colormap.Viridis;
+
     /// <summary>Moves an entry to the front of a recent list, case-insensitively, and trims the list.</summary>
     public static void Remember(List<string> list, string path)
     {
@@ -141,6 +149,24 @@ public sealed class Settings
                     }
                     case "measureUnit": settings.MeasureUnit = reader.GetString() is { } unit && unit.Length <= 16 ? unit : "mm"; break;
                     case "histogramLog": settings.HistogramLog = reader.GetBoolean(); break;
+                    case "surfaceRelief":
+                    {
+                        float relief = reader.GetSingle();
+                        settings.SurfaceRelief = float.IsFinite(relief) ? Math.Clamp(relief, 0f, 1f) : 0.15f;
+                        break;
+                    }
+                    case "surfaceShading":
+                    {
+                        float shading = reader.GetSingle();
+                        settings.SurfaceShading = float.IsFinite(shading) ? Math.Clamp(shading, 0f, 1f) : 0.8f;
+                        break;
+                    }
+                    case "surfaceSmoothing": settings.SurfaceSmoothing = Math.Clamp(reader.GetInt32(), 0, 20); break;
+                    case "surfaceMesh": settings.SurfaceMesh = Math.Clamp(reader.GetInt32(), 64, 2048); break;
+                    case "surfaceInvert": settings.SurfaceInvert = reader.GetBoolean(); break;
+                    case "surfaceWireframe": settings.SurfaceWireframe = reader.GetBoolean(); break;
+                    case "surfaceByHeight": settings.SurfaceByHeight = reader.GetBoolean(); break;
+                    case "surfaceMap": settings.SurfaceMap = Enum.TryParse(reader.GetString(), true, out Colormap surfaceMap) && Enum.IsDefined(surfaceMap) ? surfaceMap : Colormap.Viridis; break;
                     default: reader.Skip(); break; // a setting of a newer version: leave it
                 }
             }
@@ -226,6 +252,14 @@ public sealed class Settings
                 writer.WriteNumber("measurePixelSize", MeasurePixelSize);
                 writer.WriteString("measureUnit", MeasureUnit);
                 writer.WriteBoolean("histogramLog", HistogramLog);
+                writer.WriteNumber("surfaceRelief", SurfaceRelief);
+                writer.WriteNumber("surfaceShading", SurfaceShading);
+                writer.WriteNumber("surfaceSmoothing", SurfaceSmoothing);
+                writer.WriteNumber("surfaceMesh", SurfaceMesh);
+                writer.WriteBoolean("surfaceInvert", SurfaceInvert);
+                writer.WriteBoolean("surfaceWireframe", SurfaceWireframe);
+                writer.WriteBoolean("surfaceByHeight", SurfaceByHeight);
+                writer.WriteString("surfaceMap", SurfaceMap.ToString());
                 writer.WriteEndObject();
             }
             // Written whole or not at all: to a temporary file first, then renamed over the old one.

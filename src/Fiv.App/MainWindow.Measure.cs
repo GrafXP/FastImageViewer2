@@ -146,6 +146,7 @@ internal sealed unsafe partial class MainWindow
     void SetMeasure(bool on)
     {
         if (on == _measure) return;
+        if (on) EndSurface(); // the shapes are drawn on the flat image
         _measure = on;
         _measureArmed = null;
         _dragMeasure = _drawingShape = false;

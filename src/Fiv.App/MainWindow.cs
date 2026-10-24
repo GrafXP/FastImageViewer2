@@ -156,6 +156,14 @@ internal sealed unsafe partial class MainWindow
         _unit = settings.MeasureUnit;
         System.Text.Encoding.UTF8.GetBytes(_unit, _unitBuffer.AsSpan(0, _unitBuffer.Length - 1));
         _histogramLog = settings.HistogramLog;
+        _relief = settings.SurfaceRelief;
+        _shading = settings.SurfaceShading;
+        _smoothing = settings.SurfaceSmoothing;
+        _meshCells = settings.SurfaceMesh;
+        _invertHeight = settings.SurfaceInvert;
+        _wireframe = settings.SurfaceWireframe;
+        _colorByHeight = settings.SurfaceByHeight;
+        _surfaceMap = settings.SurfaceMap;
         _files.AddRange(options.Files);
         _pipeline = new ImagePipeline(() => Post(WM_APP_PIPELINE),
             (long)(options.CacheMb ?? settings.CacheMb) << 20, (long)(options.VramMb ?? settings.VramMb) << 20);
@@ -1083,7 +1091,9 @@ internal sealed unsafe partial class MainWindow
 
         bool comparing = Comparing;
         LoadedImage? drawn = !comparing && _shown?.BestGpu != null ? _shown : null;
+        StepSurface(); // may end the 3D view, whose last frame is then the 2D one
         if (comparing) RenderCompare();
+        else if (drawn != null && SurfaceOnShow) RenderSurface(drawn);
         else if (drawn != null) _renderer!.Draw(drawn.BestGpu!, ImageToScreen(drawn, _view), _view.Zoom, _display, ViewX, ViewY, ViewWidth, ViewHeight);
         if (_captureView) CaptureView(); // the picture alone: before anything is drawn over it
         if (_thumbs != null) _thumbsUploaded += _thumbs.Upload();
@@ -1344,7 +1354,8 @@ internal sealed unsafe partial class MainWindow
         var point = new System.Drawing.Point(screenX, screenY);
         PInvoke.ScreenToClient(_hwnd, &point);
         double factor = Math.Pow(WheelZoomStep, delta / (double)PInvoke.WHEEL_DELTA);
-        if (Comparing && AlignWheel(delta, control, shift)) { } // while aligning, the wheel with Ctrl or Shift turns or scales the image
+        if (_surface) SurfaceZoom(1 / factor, point.X, point.Y);
+        else if (Comparing && AlignWheel(delta, control, shift)) { } // while aligning, the wheel with Ctrl or Shift turns or scales the image
         else if (Comparing) CompareWheel(factor, point.X, point.Y);
         else if (_shown is { HasSize: true }) _view.ZoomAt(_view.Zoom * factor, point.X - ViewX, point.Y - ViewY, ViewWidth, ViewHeight);
         else return;
@@ -1355,7 +1366,8 @@ internal sealed unsafe partial class MainWindow
     {
         if (_panning)
         {
-            if (_dragMeasure) MeasureDrag(x, y);
+            if (_surface) SurfaceDrag(x - _mouseX, y - _mouseY);
+            else if (_dragMeasure) MeasureDrag(x, y);
             else if (Comparing) CompareDrag(x, y, x - _mouseX, y - _mouseY);
             else if (_shown is { HasSize: true } image) _view.Pan(x - _mouseX, y - _mouseY, image.UprightWidth, image.UprightHeight);
         }
@@ -1367,7 +1379,7 @@ internal sealed unsafe partial class MainWindow
     /// <summary>
     /// The left button went down over the image: a drag pans it. While measuring it may instead
     /// draw a measurement or change one; when comparing, move the divider, or, with Shift held
-    /// or after R, draw the region the numbers are taken over.
+    /// or after R, draw the region the numbers are taken over. In 3D it turns or moves the camera.
     /// </summary>
     void OnLeftDown(int x, int y, bool shift)
     {
@@ -1375,6 +1387,11 @@ internal sealed unsafe partial class MainWindow
         _mouseX = x;
         _mouseY = y;
         PInvoke.SetCapture(_hwnd);
+        if (_surface)
+        {
+            SurfaceMouseDown(shift);
+            return;
+        }
         if (MeasureMouseDown(x, y, shift))
         {
             Invalidate();
@@ -1434,8 +1451,8 @@ internal sealed unsafe partial class MainWindow
             Invalidate();
             return;
         }
-        // While the measurements are on show, a few keys are theirs before they are the comparison's or the viewer's.
-        if (MeasureKey(key, shift, control) || (Comparing && CompareKey(key, shift, control, repeat)))
+        // While the measurements are on show, a few keys are theirs before they are the comparison's or the viewer's; in 3D, the 3D view's.
+        if (MeasureKey(key, shift, control) || SurfaceKey(key, control) || (Comparing && CompareKey(key, shift, control, repeat)))
         {
             Invalidate();
             return;
@@ -1464,7 +1481,7 @@ internal sealed unsafe partial class MainWindow
                 break;
             case VIRTUAL_KEY.VK_C when control:
                 if (shift) CopyPath();
-                else if (Comparing) CopyView(); // a comparison is what its panes show; one image of it is copied through the menu
+                else if (Comparing || _surface) CopyView(); // a comparison is what its panes show (one image of it is copied through the menu), 3D what it shows
                 else CopyImage();
                 break;
             case VIRTUAL_KEY.VK_S when control:
@@ -1483,6 +1500,9 @@ internal sealed unsafe partial class MainWindow
                 break;
             case VIRTUAL_KEY.VK_C:
                 ToggleCompare();
+                break;
+            case VIRTUAL_KEY.VK_3 or VIRTUAL_KEY.VK_NUMPAD3: // while comparing, the third image
+                ToggleSurface();
                 break;
             case VIRTUAL_KEY.VK_H:
             {
@@ -1755,7 +1775,12 @@ internal sealed unsafe partial class MainWindow
                 OnLeftUp();
                 return default;
             case PInvoke.WM_LBUTTONDBLCLK:
-                if (Comparing)
+                if (_surface)
+                {
+                    ResetSurfaceCamera();
+                    Invalidate();
+                }
+                else if (Comparing)
                 {
                     CompareDoubleClick(LowWord(lParam.Value), HighWord(lParam.Value));
                     Invalidate();
@@ -1810,6 +1835,7 @@ internal sealed unsafe partial class MainWindow
                 _metricsCancel?.Cancel();
                 _alignCancel?.Cancel();
                 _areaCancel?.Cancel();
+                foreach (Heights heights in _heights.Values) heights.Cancel?.Cancel();
                 StopWatching();
                 _thumbs?.Dispose();
                 _pendingPack?.Dispose();

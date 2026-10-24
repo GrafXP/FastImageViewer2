@@ -132,10 +132,13 @@ public sealed unsafe class GraphicsDevice : IDisposable
     }
 
     /// <summary>Rebinds the back buffer; a flip-model present unbinds it, and so does drawing into another target.</summary>
-    public void BindBackBuffer()
+    public void BindBackBuffer() => BindBackBuffer(null);
+
+    /// <summary>Binds the back buffer with a depth buffer of its size, for what is drawn in 3D.</summary>
+    internal void BindBackBuffer(ID3D11DepthStencilView* depth)
     {
         ID3D11RenderTargetView* target = _backBuffer;
-        Context->OMSetRenderTargets(1, &target, (ID3D11DepthStencilView*)null);
+        Context->OMSetRenderTargets(1, &target, depth);
     }
 
     /// <summary>Limits drawing to a rectangle of the bound target, which then is what clip space spans.</summary>

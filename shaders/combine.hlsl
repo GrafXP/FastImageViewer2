@@ -52,7 +52,8 @@ float3 MapColor(float t)
     return lerp(colours.Load(int3(i, 0, 0)).rgb, colours.Load(int3(min(i + 1, 255), 0, 0)).rgb, p - i);
 }
 
-float3 Difference(float4 a, float4 b, float2 screenPosition)
+// The colour of the difference, and in t where it is on the colour map (also with the mask on).
+float3 Difference(float4 a, float4 b, float2 screenPosition, out float t)
 {
     float3 d3 = b.rgb - a.rgb;
     float d, reference;
@@ -71,60 +72,74 @@ float3 Difference(float4 a, float4 b, float2 screenPosition)
     }
 
     float size = abs(d);
-    float3 color;
+    if (kind == 1) t = 0.5 + 0.5 * d * amount.x;
+    else if (kind == 2) t = size * amount.x * (size * amount.x);
+    else if (kind == 3) t = size / max(abs(reference), amount.z) * amount.y;
+    else t = size * amount.x;
+    float3 color = MapColor(t);
     if (mask)
     {
         float grey = dot(Shade(a, screenPosition, window, checker, channel), LumaWeights) * MaskDim;
         color = size > amount.w ? MaskColor : grey.xxx;
     }
-    else
-    {
-        float t;
-        if (kind == 1) t = 0.5 + 0.5 * d * amount.x;
-        else if (kind == 2) t = size * amount.x * (size * amount.x);
-        else if (kind == 3) t = size / max(abs(reference), amount.z) * amount.y;
-        else t = size * amount.x;
-        color = MapColor(t);
-    }
     return color;
 }
 
-float4 ps_main(float4 position : SV_Position) : SV_Target
+struct Output
+{
+    float4 color : SV_Target0;
+    // How high the 3D height map stands here, 0..1: the more of what the view shows, the higher.
+    // Its target is bound only when the view is drawn for the 3D height map (SurfaceCanvas).
+    float height : SV_Target1;
+};
+
+Output ps_main(float4 position : SV_Position)
 {
     float2 p = position.xy - pane.xy;
     int3 texel = int3(p, 0);
     float4 storedA = imageA.Load(texel), storedB = imageB.Load(texel);
 
     float3 color;
+    float height = 0;
     if (mode == 4)
     {
-        color = storedA.a < 0 || storedB.a < 0 ? backdrop.rgb : Difference(storedA, storedB, position.xy);
+        if (storedA.a < 0 || storedB.a < 0) color = backdrop.rgb;
+        else color = Difference(storedA, storedB, position.xy, height);
     }
     else if (mode == 5)
     {
-        color = storedA.a < 0 || (amount.y > 0.5 && storedB.a < 0) ? backdrop.rgb : MapColor((1 - storedA.r) * amount.x);
+        if (storedA.a < 0 || (amount.y > 0.5 && storedB.a < 0)) color = backdrop.rgb;
+        else color = MapColor(height = (1 - storedA.r) * amount.x);
     }
     else
     {
+        // Brightness is height, as for an image on its own; where an image has no pixels, nothing stands.
         float3 a = Shown(storedA, position.xy), b = Shown(storedB, position.xy);
+        float heightA = storedA.a < 0 ? 0 : dot(a, LumaWeights), heightB = storedB.a < 0 ? 0 : dot(b, LumaWeights);
+        float second; // how much of B: all or nothing, but for the blend
         if (mode == 0)
         {
-            color = p.x < amount.x ? a : b;
+            second = p.x >= amount.x ? 1 : 0;
         }
         else if (mode == 1)
         {
-            color = p.y < amount.x ? a : b;
+            second = p.y >= amount.x ? 1 : 0;
         }
         else if (mode == 2)
         {
             // B lies over A: where B has no pixels, A is seen in full.
-            color = lerp(a, b, storedB.a < 0 ? 0 : amount.x);
+            second = storedB.a < 0 ? 0 : amount.x;
         }
         else
         {
             float2 cell = floor((p - amount.yz) / amount.x);
-            color = abs(fmod(cell.x + cell.y, 2)) < 0.5 ? a : b;
+            second = abs(fmod(cell.x + cell.y, 2)) < 0.5 ? 0 : 1;
         }
+        color = lerp(a, b, second);
+        height = lerp(heightA, heightB, second);
     }
-    return float4(color, 1);
+    Output o;
+    o.color = float4(color, 1);
+    o.height = saturate(height);
+    return o;
 }

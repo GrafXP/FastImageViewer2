@@ -62,6 +62,17 @@ internal sealed unsafe partial class MainWindow
         ("H", "the channel the plot and the histogram show, as for the image"),
         ("Ticks in the panel", "while comparing: which images of the set the plot, the histogram and the tables show"),
         ("", ""),
+        ("3, the 3D button", "3D height map: the image as a surface whose height is its brightness; again to lay it flat"),
+        ("Shift+3", "the same while comparing: every pane in 3D, one camera for all; a difference or SSIM stands as high as it differs"),
+        ("While in 3D", ""),
+        ("Drag / Shift+drag", "turn the surface / move it"),
+        ("Mouse wheel, + / -", "closer / further away, at the cursor / at the centre"),
+        ("Double click, F", "back to the starting view"),
+        ("H, D", "the channel and black, white and gamma make the heights as they make the brightness"),
+        ("Right, Left", "next / previous image, in 3D (while comparing: of the set; M, Up and Down as in 2D)"),
+        ("Ctrl+C", "copy what the 3D view shows"),
+        ("Esc", "back to the flat image"),
+        ("", ""),
         ("C", "compare the selected images, or this one with the next; again to stop"),
         ("Drop 2 to 16 files", "compare them; with Ctrl held, add them to the comparison"),
         ("While comparing", ""),
@@ -275,6 +286,7 @@ internal sealed unsafe partial class MainWindow
         if (ImGui.MenuItem("Display panel"u8, "D"u8, _showDisplayPanel)) _showDisplayPanel = !_showDisplayPanel;
         if (ImGui.MenuItem("Pixel values at high zoom"u8, "V"u8, _pixelValues)) _pixelValues = !_pixelValues;
         if (ImGui.MenuItem("Measure: lines, rectangles, circles"u8, "U"u8, _measure)) SetMeasure(!_measure);
+        if (ImGui.MenuItem("3D height map"u8, Comparing ? "Shift+3"u8 : "3"u8, _surface)) ToggleSurface();
         if (ImGui.MenuItem("Labels"u8, default(ReadOnlySpan<byte>), _paneLabels)) _paneLabels = !_paneLabels;
         if (ImGui.MenuItem("Timing overlay"u8, "F12"u8, _showPerf)) _showPerf = !_showPerf;
         if (ImGui.MenuItem("Fullscreen"u8, "F11"u8, _fullscreen)) _deferred = ToggleFullscreen;
@@ -549,6 +561,14 @@ internal sealed unsafe partial class MainWindow
         _settings.MeasurePixelSize = _pixelSize;
         _settings.MeasureUnit = _unit.Length <= 16 ? _unit : "mm";
         _settings.HistogramLog = _histogramLog;
+        _settings.SurfaceRelief = _relief;
+        _settings.SurfaceShading = _shading;
+        _settings.SurfaceSmoothing = _smoothing;
+        _settings.SurfaceMesh = _meshCells;
+        _settings.SurfaceInvert = _invertHeight;
+        _settings.SurfaceWireframe = _wireframe;
+        _settings.SurfaceByHeight = _colorByHeight;
+        _settings.SurfaceMap = _surfaceMap;
         _settings.Save(Path.Combine(_options.ProfileDir, "settings.json"));
     }
 }

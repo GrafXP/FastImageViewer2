@@ -86,7 +86,7 @@ public static unsafe class Resampler
     }
 
     /// <summary>The source positions [First, Last] one output position averages, with partial weights at both ends.</summary>
-    readonly struct Cover
+    internal readonly struct Cover
     {
         public readonly int First, Last;
         readonly float _firstWeight, _lastWeight;

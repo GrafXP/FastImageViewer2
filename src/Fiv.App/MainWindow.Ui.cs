@@ -85,14 +85,16 @@ internal sealed unsafe partial class MainWindow
         if (Comparing)
         {
             DrawCompareOverlays();
+            DrawSurfacePanel();
             if (_showComparePanel) DrawComparePanel();
             if (_showMetrics) DrawMetricsPanel();
             if (_alignMode) DrawAlignPanel();
         }
         else
         {
-            DrawSinglePixelValues();
+            if (!_surface) DrawSinglePixelValues();
             DrawSingleLabel();
+            DrawSurfacePanel();
         }
         if (_measure)
         {
@@ -164,7 +166,8 @@ internal sealed unsafe partial class MainWindow
                     if (Utf8.TryWrite(_utf8, $"{image.UprightWidth:0} x {image.UprightHeight:0}   {megapixels:0.0} MP   {image.FileSize / 1048576.0:0.00} MB", out n)) Put(n);
                     Separator();
                     double zoom = comparing && _canvasWidth > 0 ? ZoomOf(_singleItem, image) : _view.Zoom;
-                    if (Utf8.TryWrite(_utf8, $"{zoom * 100:0.#} %", out n)) Put(n);
+                    if (SurfaceOnShow) ImGui.TextUnformatted("3D height map"u8);
+                    else if (Utf8.TryWrite(_utf8, $"{zoom * 100:0.#} %", out n)) Put(n);
                     if (image.Layout is { } layout && layout != PixelLayout.Bgra8)
                     {
                         Separator();
@@ -257,6 +260,7 @@ internal sealed unsafe partial class MainWindow
         if (Comparing) return TryGetComparePixel(_singleItem, out x, out y, out value); // through the pane the mouse is in
         x = y = 0;
         value = default;
+        if (SurfaceOnShow) return false; // the surface is not where the flat image would be
         if (_mouseX < ViewX || _mouseY < ViewY || _mouseX >= ViewX + ViewWidth || _mouseY >= ViewY + ViewHeight) return false;
         (double ix, double iy) = ImageToScreen(image, _view).Inverse().Apply(_mouseX + 0.5, _mouseY + 0.5);
         x = (int)Math.Floor(ix);

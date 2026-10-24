@@ -15,7 +15,9 @@ $shaders = @(
     @('view.hlsl', 'ps_main', 'ps_5_0', 'view_ps'),
     @('view.hlsl', 'ps_raw', 'ps_5_0', 'view_raw_ps'),
     @('combine.hlsl', 'vs_main', 'vs_5_0', 'combine_vs'),
-    @('combine.hlsl', 'ps_main', 'ps_5_0', 'combine_ps')
+    @('combine.hlsl', 'ps_main', 'ps_5_0', 'combine_ps'),
+    @('surface.hlsl', 'vs_main', 'vs_5_0', 'surface_vs'),
+    @('surface.hlsl', 'ps_main', 'ps_5_0', 'surface_ps')
 )
 
 $cs = Join-Path $out 'Shaders.g.cs'

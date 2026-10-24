@@ -26,6 +26,7 @@ return command switch
     "metrics" => MetricsCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 5), options.GetOrNull("--out")),
     "align" => AlignCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 5), options.GetOrNull("--out")),
     "measure" => MeasureCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
+    "surface" => SurfaceCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     "thumbs" => ThumbsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     "formats" => FormatsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out"), options.GetOrNull("--dump")),
@@ -52,6 +53,8 @@ static int Help()
                                                               aligning two images: time, and how close to known moves, turns and scalings
         fivbench measure [--root <dir>] [--reps 7] [--out <file.md>]
                                                               measuring: the numbers of an area and the values along a line
+        fivbench surface [--root <dir>] [--reps 7] [--out <file.md>]
+                                                              the 3D height map: making the height grid of an image, smoothed or not
         fivbench thumbs  [--root <dir>] [--out <file.md>]      thumbnails: making them, and reading them back from the pack
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus

@@ -139,19 +139,47 @@ public sealed unsafe class CompareRenderer : IDisposable
         in DisplaySettings display, in MixSettings mix, int paneX, int paneY, int paneWidth, int paneHeight, Vector3 backdrop)
     {
         if (paneWidth <= 0 || paneHeight <= 0) return;
-        EnsureTargets(paneWidth, paneHeight);
-        ID3D11DeviceContext* context = _gpu.Context;
-        Fill(_a, a, aToPane, zoomA, display, paneWidth, paneHeight);
-        Fill(_b, b, bToPane, zoomB, display, paneWidth, paneHeight);
-
+        Prepare(a, aToPane, zoomA, b, bToPane, zoomB, display, paneWidth, paneHeight);
         _gpu.BindBackBuffer();
-        _gpu.SetViewport(paneX, paneY, paneWidth, paneHeight);
+        Combine(display, mix, paneX, paneY, paneWidth, paneHeight, backdrop);
+    }
+
+    /// <summary>
+    /// The same into a canvas laid flat for the 3D height map: each transform maps image pixels
+    /// to texels of the canvas, which the mix's divider and cells are given in too. Besides the
+    /// colours, the combining pass writes how high each point stands; then the mip levels are made.
+    /// </summary>
+    public void DrawFlat(GpuImage? a, in Affine2 aToCanvas, double zoomA, GpuImage? b, in Affine2 bToCanvas, double zoomB,
+        in DisplaySettings display, in MixSettings mix, SurfaceCanvas canvas, Vector3 backdrop)
+    {
+        if (canvas.Width <= 0 || canvas.Height <= 0) return;
+        Prepare(a, aToCanvas, zoomA, b, bToCanvas, zoomB, display, canvas.Width, canvas.Height);
+        canvas.Bind();
+        Combine(display, mix, 0, 0, canvas.Width, canvas.Height, backdrop);
+        _gpu.BindBackBuffer(); // the canvas may be read now
+        canvas.MakeMips();
+    }
+
+    /// <summary>Each image's stored values into its intermediate target, which is made large enough for this size.</summary>
+    void Prepare(GpuImage? a, in Affine2 aToTarget, double zoomA, GpuImage? b, in Affine2 bToTarget, double zoomB,
+        in DisplaySettings display, int width, int height)
+    {
+        EnsureTargets(width, height);
+        Fill(_a, a, aToTarget, zoomA, display, width, height);
+        Fill(_b, b, bToTarget, zoomB, display, width, height);
+    }
+
+    /// <summary>The final pass, into the rectangle (<paramref name="x"/>, <paramref name="y"/>, <paramref name="width"/>, <paramref name="height"/>) of whatever is bound.</summary>
+    void Combine(in DisplaySettings display, in MixSettings mix, int x, int y, int width, int height, Vector3 backdrop)
+    {
+        ID3D11DeviceContext* context = _gpu.Context;
+        _gpu.SetViewport(x, y, width, height);
 
         Constants constants = default;
         constants.Window = display.WindowConstants();
         constants.Checker = DisplaySettings.CheckerConstants;
         constants.Backdrop = new Vector4(backdrop, 1);
-        constants.Pane = new Vector4(paneX, paneY, paneWidth, paneHeight);
+        constants.Pane = new Vector4(x, y, width, height);
         constants.Amount = mix.Kind switch
         {
             MixKind.Checker => new Vector4(Math.Max(1, mix.Amount), mix.OriginX, mix.OriginY, 0),
@@ -194,27 +222,7 @@ public sealed unsafe class CompareRenderer : IDisposable
     void UseColors(Colormap map)
     {
         if (_colors != null && _colorsOf == map) return;
-        ID3D11Device* device = _gpu.Device;
-        D3D11_TEXTURE2D_DESC desc = default;
-        desc.Width = Colormaps.Size;
-        desc.Height = 1;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT.DXGI_FORMAT_R8G8B8A8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE.D3D11_USAGE_IMMUTABLE;
-        desc.BindFlags = D3D11_BIND_FLAG.D3D11_BIND_SHADER_RESOURCE;
-
-        ID3D11Texture2D* texture;
-        fixed (byte* table = Colormaps.Table(map))
-        {
-            var data = new D3D11_SUBRESOURCE_DATA { pSysMem = table, SysMemPitch = Colormaps.Size * 4 };
-            Hr.Check(device->CreateTexture2D(&desc, &data, &texture), "CreateTexture2D");
-        }
-        ID3D11ShaderResourceView* view;
-        HRESULT hr = device->CreateShaderResourceView((ID3D11Resource*)texture, (D3D11_SHADER_RESOURCE_VIEW_DESC*)null, &view);
-        texture->Release();
-        Hr.Check(hr, "CreateShaderResourceView");
+        ID3D11ShaderResourceView* view = ColormapTexture.Create(_gpu.Device, map);
         if (_colors != null) _colors->Release();
         _colors = view;
         _colorsOf = map;

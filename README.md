@@ -82,6 +82,29 @@ worked out from a line of known length), sizes are shown in that unit as well. T
 values along a line, and the numbers and the histogram of an area can be saved as CSV. The
 panel is a window like the folder panel: it can be moved, made any size, and docked at an edge.
 
+An image can be seen as a 3D height map. The 3D button in the top right corner of the image,
+or `3`, tilts the picture back and lets it rise into a surface whose height is its brightness;
+again, and it settles flat into the 2D view. The surface carries every pixel of the image; its
+heights come from a grid of up to 2048 values on the long side, made from the decoded pixels in
+25 to 65 ms. What the display controls do to the brightness they do to the heights: black and
+white set the lowest and the highest point, gamma shapes the slopes, `H` takes the height from
+one channel. So the values of a 16-bit or float image (a depth map, terrain, a measured
+surface) are its height, while a photograph becomes a relief of its brightness, which is not
+its depth. A light from the image's upper left shades the slopes. The panel under the button
+sets the height, the smoothing, how fine the mesh is, the light, the colours (the image's own,
+or a colour map by height), upside down and wireframe. The camera turns about the surface with
+a drag; going to the next image keeps it where it is, and the next image rises in its turn.
+
+While comparing (`Shift+3` there, since `3` is the third image), every pane goes into 3D and one
+camera sees them all: side by side and in the grid, each image is raised by its own values, on
+the comparison's canvas with one height scale for all, so that heights can be compared as
+they are seen; its alignment and placement are kept. A view that combines two images is drawn
+flat over the whole canvas (at most 2048 pixels on the long side) and raised by what it shows:
+the difference by where it is on the colour scale, so that the gain sets the height and a signed
+difference stands about a middle plane; SSIM by the dissimilarity; split, blend and checkerboard
+by brightness. Everything that changes these views in 2D (mode, gain, divider, opacity, cells,
+colours) changes them in 3D at once.
+
 | Input | Action |
 |---|---|
 | `Right` / `Space` / `PgDn`, `Left` / `Backspace` / `PgUp` | next, previous image |
@@ -106,6 +129,7 @@ panel is a window like the folder panel: it can be moved, made any size, and doc
 | `H`, `Shift+H` | show colour, red, green, blue, alpha, luma in turn |
 | `V` | write the pixel values into the pixels once they are large enough on screen (zoom goes to 25600 %) |
 | `U` | measure: lines, rectangles and circles on the image, and the panel with their numbers (below) |
+| `3`, the 3D button | the image as a 3D height map, or back to flat (below); while comparing `Shift+3` |
 | `F11` | fullscreen |
 | `F12` | timing overlay: start-up, this image, navigation, cache, folder index |
 | `Esc` | leave fullscreen, stop comparing, or quit |
@@ -175,6 +199,20 @@ Measuring, on one image or while comparing:
 | "Scale" in the panel | what one pixel is long, and in which unit; or the known length of the selected line, from which that is worked out |
 | Buttons in the panel | save the list, the profile of the line, or the numbers and the histogram of the area, as CSV |
 
+The 3D height map, of one image or of every pane of a comparison (measuring lays it flat):
+
+| Input | Action |
+|---|---|
+| `3`, the 3D button | into 3D, or back to the flat image |
+| `Shift+3` | the same while comparing |
+| Drag, `Shift`+drag | turn the camera about the surface; move it over the ground |
+| Mouse wheel, `+` / `-` | closer or further away, at the cursor / at the centre |
+| Double click, `F`, "Starting view" | back to the view the 3D started from, the whole image filling the window |
+| `D`, `H` | black, white, gamma and the channel: they make the heights as they make the brightness |
+| `Right`, `Left` | next, previous image, in 3D; while comparing, of the set (`M`, `Up`, `Down`, `G` act as in 2D) |
+| `Ctrl+C` | copy what the 3D view shows |
+| `Esc` | back to the flat image |
+
 A line is where the mouse puts it: zoomed out its ends lie on the centres of pixels, zoomed in
 they follow the mouse to the fraction of a pixel the screen shows. Along it there is a sample
 every pixel of length, blended from the four pixels around its point, so a line along a row or
@@ -227,6 +265,7 @@ $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
 & $bench metrics     # comparing on the CPU: error metrics, structural similarity, saving the views
 & $bench align       # aligning two images: time, and how close to known moves, turns and scalings
 & $bench measure     # measuring: the numbers of an area and the values along a line
+& $bench surface     # the 3D height map: making the height grid of an image
 & $bench decode      # decoder timings
 & $bench formats     # every sample of corpus\formats: decoder, result, timings, what Windows alone makes of it (--dump <dir>: as PNG)
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)

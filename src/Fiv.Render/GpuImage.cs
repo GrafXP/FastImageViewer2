@@ -66,6 +66,36 @@ public sealed unsafe class GpuImage : IDisposable
         IsPreview = image.Width != image.SourceWidth || image.Height != image.SourceHeight;
     }
 
+    GpuImage(int width, int height, PixelLayout layout, bool reduced)
+    {
+        Width = width;
+        Height = height;
+        Layout = layout;
+        IsPreview = reduced;
+    }
+
+    /// <summary>
+    /// A texture drawn on the GPU, seen as an image of <paramref name="width"/> by
+    /// <paramref name="height"/> pixels in one tile, as a reduced-size preview is. Holds a
+    /// reference of its own to the view.
+    /// </summary>
+    internal static GpuImage Wrap(ID3D11ShaderResourceView* view, int width, int height, int textureWidth, int textureHeight, PixelLayout layout)
+    {
+        view->AddRef();
+        var image = new GpuImage(width, height, layout, textureWidth != width || textureHeight != height);
+        image._tiles.Add(new Tile
+        {
+            View = view,
+            Width = width,
+            Height = height,
+            DrawRight = width,
+            DrawBottom = height,
+            TextureWidth = textureWidth,
+            TextureHeight = textureHeight,
+        });
+        return image;
+    }
+
     static DXGI_FORMAT Format(PixelLayout layout) => layout switch
     {
         PixelLayout.Bgra8 => DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,

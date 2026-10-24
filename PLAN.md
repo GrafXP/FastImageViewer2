@@ -474,6 +474,39 @@ preview. TIFF: 10-, 14-, 24-bit, 64-bit float, LogLuv and uncompressed YCbCr fai
 float is read as integers and 32-bit integers as noise, both without an error. 12-bit and
 16-bit lossless JPEG fail.
 
+### 2.9 Measured: the 3D height map
+
+Same machine and corpus. Reproduce with `fivbench surface` (the height grid alone); the
+viewer's figures are from its `--perf-log` in runs driven by `window-shot.ps1`, window of 1880 x
+1000, no panels.
+
+**The height grid**, on all 12 logical cores, median of 15: the image reduced to 2048 x 1365
+values by averaging, then smoothed (three box blurs of the radius given, along the rows and down
+the columns), then its mip levels. This is what passes between the click and the start of the
+turn, with the upload of 11 MB to the GPU after it.
+
+| Image | Smoothing 0 | 2 | 8 | 20 | Mip levels |
+|---|---|---|---|---|---|
+| 24 MP JPEG, 8-bit colour | 33 ms | 45 ms | 44 ms | 44 ms | 2.5 ms |
+| 24 MP PNG, 16-bit grey | 20 ms | 37 ms | 38 ms | 38 ms | 1.4 ms |
+| 24 MP TIFF, float grey | 22 ms | 38 ms | 38 ms | 39 ms | 1.3 ms |
+| 50 MP JPEG, 8-bit colour | 42 ms | 59 ms | 60 ms | 60 ms | 1.4 ms |
+
+The smoothing costs the same at any radius (running sums), some 17 ms, most of it the two
+passes that turn the grid over so that the columns are blurred as rows.
+
+**In the viewer**: the 24 MP JPEG turned into 3D and back with the finest mesh (2048 cells on
+the long side, 5.6 million triangles): 216 frames, one every 7.0 ms on average (the screen's
+refresh), the longest interval 29.4 ms, which is the first frame of the 3D view, where the
+renderer is made. CPU per frame 0.14 ms on average and 1.2 ms at most, as in 2D: the surface
+costs the GPU, not the CPU.
+
+**While comparing**, the same turn in and out, 24 MP images: a grid of four (three of 6000 x 4000,
+one of 3000 x 2000), each its own surface, 227 frames, one every 6.97 ms, the longest interval
+16.7 ms; the difference of a pair, drawn flat into its canvas of 2048 x 1365 and raised in every
+frame, 214 frames, one every 7.03 ms, the longest 19.5 ms. CPU per frame 0.19 and 0.22 ms on
+average, 1.0 and 4.4 ms at most (the first frame of the difference, which makes the canvas).
+
 ## 3. Technology
 
 ### 3.1 Language: C#, C++, Rust or Go?
@@ -783,7 +816,7 @@ mipmapped filtering when zoomed out, optional bicubic.
 | Image information / EXIF, high-bit-depth info | M8 |
 | Save with annotations, save viewport, screen capture | M5 (export view / diff), rest M8 |
 | Rotate / flip / crop, filters, false-colour LUT, per-image undo history, overwrite original | M8, on request |
-| Image analysis (histogram, statistics, FFT), segmentation, 3D surface plot | histogram and statistics of a rectangle or a circle: M8.1 (the difference histogram is in M5); the rest not planned |
+| Image analysis (histogram, statistics, FFT), segmentation, 3D surface plot | histogram and statistics of a rectangle or a circle: M8.1 (the difference histogram is in M5); the 3D surface plot as the 3D height map (after M8.1, section 9); the rest not planned |
 | OCR / barcode reader, Lua scripting with editor and debugger | not planned; M7's command line covers automation of comparisons |
 
 `USER_GUIDE.md` also describes angle measurement, batch processing, a pixel inspector, histogram
@@ -1456,6 +1489,116 @@ comparing, aligning and measuring with images of these formats; cancelling a dec
 - libheif, libde265 and LibRaw are LGPL (LibRaw also CDDL), linked statically into
   `fivcodecs.dll`: whoever ships the viewer has to let users replace that DLL with their own
   build, which the shim's source and the build scripts allow.
+
+**3D height map**
+
+*State 2026-10-24: built, measured (section 2.9), looked at in the viewer. Asked for as "click
+a button, and the image should just turn in 3d from image to 3d heightmap", then "can we do this
+for all other view like multi view or comparison views?". Height from brightness was chosen
+after a look at what it would take; depth from photographs through a neural network (Depth
+Anything V2 and the like) was left for later.*
+
+Built: the **3D button** in the view's upper right corner, `3`, or "3D height map" in the menu
+turns the image on show into a surface whose height is its brightness. It **turns**: the first
+frame is the 2D view exactly (a camera straight down at the point the view is centred on, as
+far off as the zoom says), and over 0.7 s the camera tilts back to 50 degrees, turns by 20 and
+moves out a little while the surface rises from flat. Back to 2D the same way in reverse,
+whatever the camera has done meanwhile, and the 2D view takes over where it was. From a fitted
+2D view the 3D view ends with the whole image filling the window (small images enlarged, which
+the 2D fit does not do); from a zoomed-in one it keeps that part.
+
+- **Drawn** from the image's own textures, tile by tile: a grid of vertices over each tile, a
+  row of cells per instance as a triangle strip without a vertex buffer, cut at the tile's
+  edges, so that neighbouring tiles meet at vertices of the same height. The colour is every
+  pixel of the image, with exact pixels where it is magnified (decided per screen pixel) and
+  anisotropic filtering where it is seen at a slant. Depth buffer reversed (1 near, 0 at
+  infinity), 32-bit float, the renderer's own, made when first needed.
+- **Heights** (Fiv.Surface.HeightField): the decoded pixels averaged to at most 2048 values on
+  the long side, in the stored orientation and in the units the GPU samples, smoothed if asked,
+  with mip levels; made on a worker and made again when the image, its full version, the
+  channel (`H`) or the smoothing changes. Black, white, gamma and exposure act on them in the
+  shader, as on the colours: white is the highest point. Float samples that are not finite are
+  left out; a cell with none lies at the lowest value.
+- **Light** from the image's upper left at 45 degrees, from the slope worked out per screen pixel
+  from the heights at the detail the screen shows: level ground keeps its colour exactly, so the
+  first frame of the turn is the 2D picture.
+- **Camera** (Fiv.Surface.SurfaceCamera): a drag turns it about the point looked at, `Shift`+drag
+  moves that point over the ground, the wheel brings it closer at the cursor (the ground under
+  the cursor stays there), double click and `F` go back to the starting view. A new image of the
+  same size keeps the camera: a folder can be walked through in 3D, each image rising in turn.
+- **Options** in a panel under the button: height (a share of the long side), smoothing, mesh of
+  256 to 2048 cells, light, colours (the image's own or a colour map by height), upside down,
+  wireframe; kept in settings.json.
+- **Comparing** (`Shift+3`, as `3` is the third image; the button and the menu as on one image):
+  every pane goes into 3D, one camera for all. The ground is the comparison's canvas, with one
+  height scale for all, so that heights can be compared as seen. A pane of one image (single,
+  side by side, grid) is that image's surface, placed and aligned on the canvas as in 2D; each
+  image has its height grid (1024 values on the long side when more than four are compared),
+  kept while it is in the set, and the mesh is no finer than the pane has pixels. A pane that
+  combines two (split, blend, checkerboard, difference, SSIM) is drawn by the 2D combining pass,
+  over the whole canvas at up to 2048 texels, into a texture of colours and one of heights at
+  once (SurfaceCanvas: the pass writes a second target), in every frame, so that the mode, the
+  gain, the divider, the opacity and the colours act as in 2D; that canvas is then raised. Its
+  height is what the view shows: the difference's place on the colour scale (a signed one
+  stands about a middle plane), the dissimilarity, or the brightness of split, blend and
+  checkerboard; smoothed by reading it from a coarser mip level. In 3D the divider, the regions,
+  the linked cursor and the pixel readouts are not drawn; the 3D panel pushes the second image's
+  name down. Measuring ends the 3D view.
+- `Ctrl+C` copies what the 3D view shows.
+- Fiv.Render: SurfaceRenderer, SurfaceCanvas, ColormapTexture (taken out of CompareRenderer),
+  CompareRenderer.DrawFlat, GpuImage.Wrap; shaders\surface.hlsl; combine.hlsl writes the height
+  as a second target. The light follows the ground's slope also where the ground is scaled (a
+  comparison's "scaled to fit", an alignment), through the inverse transpose of the image's place.
+- fivbench surface.
+- Tests: 21 new (649 in all): the grid's values for every layout and channel, its reduction,
+  the size it lies over, float gaps, smoothing (a flat image stays flat, a spike spreads evenly
+  and keeps its sum, and reaches no further than it should), cancelling; the camera straight
+  down projecting the ground as the 2D view does, reversed depth, turning within limits, the
+  ground following a drag and staying under the cursor while zooming, the turn between two
+  cameras; the options in settings.json.
+
+Looked at in the viewer with `window-shot.ps1`: the turn in and out on a 24 MP JPEG (several
+tiles, no seam), a 12 MP JPEG turned by its EXIF orientation, the next image rising, `Esc`,
+turning, moving and zooming, double click, `H` (red), "upside down" clicked in the panel,
+`Ctrl+C` to a file, a float TIFF in Turbo by height, a 16-bit PNG with alpha as wireframe.
+Comparing: side by side in and out with turning and `Esc`; the difference of a JPEG and its
+quality-50 copy with the gain raised by `Up`, and of an edited copy in Turbo; split with the
+divider moved by `Up`; checkerboard; blend; a grid of four with an image of half the size; SSIM;
+single, going to the second image in 3D. Split, blend and checkerboard in 2D after the change to
+the combining shader, with an image of half the size: as before.
+
+**Changed from before, to be confirmed:**
+
+- `3` on one image is the 3D view; while comparing it is still the third image, and `Shift+3`
+  (until now the third image too) is the 3D view.
+- The 3D button is always in the view's upper right corner when one image is shown, and while
+  comparing; in a pane that combines two images, the second image's name is under it.
+- The combining shader writes a second output, the height, which only the 3D view binds; split,
+  blend and checkerboard now pick between and blend the two images through one `lerp`.
+- A double click and `F` in a comparison in 3D go to the starting view instead of zooming the panes.
+- `Shade` in display.hlsli is now `ShadeOver` (over any colour) and `Shade` (over the
+  checkerboard), with the same result.
+
+**Written but not tested:** the menu item; the slider and mesh controls dragged by the mouse
+(each was set through settings.json instead); a window resized or made fullscreen in 3D; the
+software rasteriser (no GPU); a failure while the heights are made; an image whose decoded
+pixels are not in memory. While comparing: panes that are not linked (the turn starts from the
+active image's view for all of them, so the others jump); an aligned or "scaled to fit"
+image in 3D; more than four images (the smaller height grids); aligning by the keys in 3D; a
+graphics card without mip levels made for float textures (asked for, then left without them).
+
+**Not done:**
+
+- Depth from photographs: brightness is not depth, so a photograph becomes a relief of its
+  brightness. A depth estimation network (Depth Anything V2 Small is Apache-2.0, about 25
+  million parameters) through ONNX Runtime or Windows ML could be a second source of heights.
+- No sides or base: from low down the surface is a sheet, not a block.
+- No pixel readout or measuring on the surface; the readout under the cursor is off in 3D.
+- A combined view in 3D has at most 2048 texels of colour on the long side, also when zoomed in
+  close; a pane of one image has every pixel.
+- The divider and the regions cannot be dragged in 3D (the keys still move the divider).
+- No export of the surface as a mesh (STL, OBJ) or of the heights as an image.
+- Transparent pixels show the background colour, not the checkerboard.
 
 ## 10. Risks
 
