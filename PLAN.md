@@ -437,6 +437,43 @@ it in three of the rows, as with the values written into the pixels (2.5). Nothi
 while nothing changes: a run of some fifteen seconds with the panel open, in which three
 shapes were drawn, came to 110 frames.
 
+### 2.8 Measured: the bundled decoders
+
+Same machine (12 logical cores). Reproduce with `bench\tools\get-format-samples.ps1` (128 files
+from conformance suites, test sets of the libraries and raw.pixls.us) and `fivbench formats`,
+which decodes each as the viewer does, times it, and tries the Windows codecs alone on it.
+Full decode, and for a raw the JPEG embedded in it, decoded for a 1920 x 1080 view:
+
+| File | Size | Full decode | Preview |
+|---|---|---|---|
+| HEIC from a phone, a grid of tiles | 4032 x 3024 | 129 ms | none (thumbnail: the one stored in the file, 10 ms) |
+| HIF from a camera, 10-bit 4:2:2 | 4240 x 2832 | 428 ms | none |
+| HIF from a camera, 10-bit, one coded picture | 4672 x 7008 | 2.3 s | none |
+| AVIF 10-bit | 1204 x 800 | 33 ms | none |
+| AVIF, a grid of 5 x 4 | 6400 x 2880 | 227 ms | none |
+| JPEG XL, lossy, progressive | 4064 x 2704 | 168 ms | none |
+| WebP, lossy | 550 x 368 | 3 ms | none |
+| Canon CR3 | 4319 x 2879 | 672 ms | 1620 x 1080, 7 ms |
+| Nikon NEF, lossless compressed | 5600 x 3728 | 1.28 s | 1392 x 928, 37 ms |
+| Sony ARW | 4692 x 3132 | 0.78 s | 1152 x 768, 44 ms |
+| Fujifilm RAF, X-Trans | 6264 x 4176 | 2.10 s | 1104 x 736, 50 ms |
+| Olympus ORF | 5240 x 3912 | 1.48 s | 1600 x 1200, 17 ms |
+
+Raws are demosaiced by LibRaw with AHD (X-Trans: Markesteijn 1-pass) on all cores through
+OpenMP. On one core, as first built, the RAF took 15.6 s and the NEF 2.9 s; 3-pass X-Trans on
+all cores takes 3.3 s. The 33 MP HIF is one HEVC picture without tiles or wavefronts: libde265
+decodes it on one thread whatever it is given. In the viewer, the RAF's embedded JPEG was on
+screen 294 ms after the start and its own pixels at 2.24 s.
+
+**What the Windows codecs make of the same files** on this machine, which has the HEIF, AV1,
+WebP, raw and JPEG XL extensions installed: HEIC and AVIF open, except 12-bit HEIF, a gray
+10-bit HEIF and a HEIF that is only an image sequence; a 10-bit AVIF with HDR metadata comes out
+over-saturated. JPEG XL does not open at all ("component initialization has failed"), though
+its decoder is registered. Raws open as the camera's JPEG in 8 bits, a DJI DNG as its 960 x 720
+preview. TIFF: 10-, 14-, 24-bit, 64-bit float, LogLuv and uncompressed YCbCr fail; 16-bit
+float is read as integers and 32-bit integers as noise, both without an error. 12-bit and
+16-bit lossless JPEG fail.
+
 ## 3. Technology
 
 ### 3.1 Language: C#, C++, Rust or Go?
@@ -484,7 +521,8 @@ The two programs are kept in `bench/bakeoff` and can be re-run with `fivbench ba
 | Rendering | **Direct3D 11**, DXGI flip-model swap chain, HLSL shaders compiled at build time | zoom, pan and every compare mode run on the GPU; D3D12 would add complexity, not speed |
 | UI | **Dear ImGui** (docking), drawn in the same D3D11 pass as the image | fastest startup and frame time of any option; virtualised lists of 100k rows are trivial; well suited to dense tool UIs |
 | JPEG | **libjpeg-turbo 3**, statically linked | fastest CPU JPEG decoder; can decode straight to 1/2, 1/4, 1/8 size |
-| Other formats | **Windows Imaging Component (WIC)** | built in; PNG, TIFF incl. 16-bit and float, BMP, GIF, ICO, WebP, plus HEIC/AVIF/RAW when the Windows codecs are installed |
+| Other formats | **Windows Imaging Component (WIC)** | built in; PNG, TIFF incl. 16-bit and float, BMP, GIF, ICO, JPEG XR |
+| HEIF/HEIC, AVIF, WebP, JPEG XL, camera raw; TIFFs WIC gets wrong | **libheif** (libde265, dav1d), **libwebp**, **libjxl**, **LibRaw**, **libtiff**, in `fivcodecs.dll` | the Windows codecs for these are Store extensions, on some machines and not on others (added after M8.1, section 9) |
 | Faster PNG / WebP | add native decoders (libspng or wuffs, libwebp) **only if** the M0 benchmark shows WIC is the bottleneck | no dependency without a measured win |
 | CPU maths | AVX2 intrinsics (`Vector256`), `TensorPrimitives` | metrics, min/max, downscale |
 | Threading | fixed pool of decode workers fed by priority queues | visible-first ordering and cancellation |
@@ -725,7 +763,7 @@ mipmapped filtering when zoomed out, optional bicubic.
 | Old feature | In FastImageViewer2 |
 |---|---|
 | Open files / folder, drag and drop, command line, single instance | M1 |
-| Formats JPG, PNG, TIFF, BMP, GIF, WebP, ICO; 16-bit and float PNG/TIFF with raw values | M1 (HEIC/AVIF/RAW additionally, when Windows codecs are installed) |
+| Formats JPG, PNG, TIFF, BMP, GIF, WebP, ICO; 16-bit and float PNG/TIFF with raw values | M1; HEIC/AVIF/RAW at first only where the Windows codecs were installed, then with decoders of its own (after M8.1), with JPEG XL and 12-bit JPEG |
 | Zoom, pan, fit, 100 %, interpolation toggle, fullscreen, keep zoom/pan across images | M1 |
 | Pixel coordinates and values under the cursor, status bar | M1 |
 | Folder panel: thumbnails; name, size, dimensions, modified columns; natural sort; auto-update | M2 (index, navigation), M3 (thumbnails, panel) |
@@ -1341,6 +1379,84 @@ measurements; a display of another DPI; running out of memory.
   themselves (divided by their number).
 - Not measured: real photographs.
 
+**Formats — decoders of its own**
+
+*State 2026-10-24: built, measured (section 2.8), tested on 128 sample files. Asked for after a
+HEIC would not open: "find images for all supported formats online, download them and test
+the opening correctly; also high bit images", then "add native loaders for these formats".*
+
+Built: **fivcodecs.dll**, a C++ shim over libheif 1.23.6 (with libde265 1.1.3 for HEVC and
+dav1d 1.5.4 for AV1), libwebp 1.6.0, libjxl 0.12.0, LibRaw 0.22.2 and libtiff 4.7.2, all
+static, /MT, from pinned sources (`native\build-codecs.ps1`, `native\build-fivcodecs.ps1`).
+One call per image: the decoder works out size and layout, asks the C# side for the memory
+through a callback, and writes the pixels into it, so there is no second copy. It is a DLL in
+the Native AOT build too, loaded with the first image that needs it; PNG, GIF and BMP never
+load it. Next to it goes `vcomp140.dll`, the OpenMP runtime, for LibRaw.
+
+- **Which decoder**: by the first bytes, not the ending. HEIF and AVIF by their brands, CR3 too
+  (it is ISO media); WebP, JPEG XL; raws by their own signatures, and a TIFF only if its first
+  directory has a camera's Make or a DNG version and LibRaw takes it. TIFFs go to WIC, except
+  those WIC fails on or gets wrong (10, 14, 24, 32 bits, signed, 16- and 64-bit float, LogLuv,
+  uncompressed YCbCr), which go to libtiff. A file the bundled decoder rejects gets WIC, and a
+  TIFF WIC rejects gets libtiff.
+- **Depth**: more than 8 bits per channel stay: RGBA16 or Gray16, 10 and 12 bits spread over 16
+  as WIC does it (the low bits repeat the high ones); float grey as GrayFloat. 12-bit JPEG and
+  lossless JPEG up to 16 bits through libjpeg-turbo's own calls for them, in full only (no
+  preview for those).
+- **HEIF**: the primary image with the file's rotation, mirroring and crop applied; a file that
+  is only an image sequence shows its first picture. Thumbnails come from the thumbnail the
+  file holds. All cores on a grid's tiles, or on the codec's threads for one picture.
+- **Raw**: decoded as the sensor has it, turned by the orientation the file states, as a JPEG
+  is. That lets the JPEG the camera embedded (the largest in the file) stand in until the raw
+  is decoded, drawn at the raw's size: the file name decides that a preview stage is planned,
+  as for JPEG. Thumbnails come from that JPEG too. 16-bit sRGB from camera white balance, AHD,
+  Markesteijn 1-pass for X-Trans; Foveon X3F through LibRaw's x3f code.
+- **JPEG XL**: the first frame, upright; lossy (XYB) files converted to sRGB; premultiplied
+  alpha divided out. **WebP**: animated ones show their first frame; thumbnails scaled while
+  decoding.
+- The endings `hif`, `jxl`, `crw`, `nrw`, `srf`, `sr2`, `rwl`, `pef`, `srw`, `3fr`, `iiq`, `erf`,
+  `mrw`, `x3f`, `dcr`, `kdc`, `mos` and `mef` are new in the folder lists and in "File types...".
+- Tests: 210 new, most of them on the sample files and skipped without them: every sample
+  opens with the decoder it should and makes a thumbnail; sizes and layouts of 31 of them; the
+  10-, 12- and 14-bit samples spread exactly; a TIFF at every depth from 8 to 32 bits is the same
+  picture; float TIFFs of 16, 32 and 64 bits give the same values; the 12-bit JPEG is the
+  picture of its 16-bit PNG; AVIF rotation, mirroring and crop against the references; a raw's
+  preview is its shape and stands at its size; a decode cancelled before it starts gives nothing.
+  Found on the way by them: a raw decode cancelled while LibRaw opened the file came back as an
+  error, and the TIFF path rounded 10- and 14-bit samples where the other decoders repeat bits.
+
+**Changed from before, to be confirmed:**
+
+- HEIF, AVIF and JPEG XL are now among the "Common" endings of the File types dialog.
+- Raws show the camera's JPEG first, then LibRaw's decode, which is flatter (no tone curve) and
+  in a DJI DNG darker than the camera's rendering: the picture changes when it lands.
+- `LoadedImage.JpegName` became `PreviewName` (JPEG or raw by name).
+
+**Written but not tested:** HEIF, AVIF, JPEG XL and TIFFs through libtiff in the viewer itself
+(only the decodes, the thumbnails and two images in the viewer: a phone HEIC and a RAF);
+comparing, aligning and measuring with images of these formats; cancelling a decode midway
+(only before it starts); a machine without the Windows codec extensions; files of more than
+2 GB; running out of memory.
+
+**Not done:**
+
+- HDR: PQ and HLG files (AVIF, HEIF, JPEG XL) show their code values, flat and dim; no tone
+  mapping (WIC maps them to SDR). Gain maps (Ultra HDR, Apple) are not applied: the SDR picture
+  shows.
+- Float colour (JPEG XL float, float RGB TIFF, half-float JPEG XR) is clipped to 0..1 in RGBA16:
+  there is no float colour layout. Float grey keeps its values.
+- No colour management, as before: wide-gamut files show as if sRGB; CMYK only where a decoder
+  turns it into RGB itself.
+- The file list shows no dimensions for HEIF, AVIF, JPEG XL and raws (it reads them from file
+  headers for JPEG, PNG, GIF, BMP, TIFF and WebP only).
+- No preview stage for HEIF: a 33 MP camera HIF is blank for 2.3 s. Its stored thumbnail could
+  stand in.
+- Cameras newer than LibRaw 0.22.2 (the Sony A7 V in the samples) do not open; a BMP with
+  alpha bitfields (Windows CE) does not either.
+- libheif, libde265 and LibRaw are LGPL (LibRaw also CDDL), linked statically into
+  `fivcodecs.dll`: whoever ships the viewer has to let users replace that DLL with their own
+  build, which the shim's source and the build scripts allow.
+
 ## 10. Risks
 
 | Risk | Mitigation |
@@ -1351,7 +1467,7 @@ measurements; a display of another DPI; running out of memory.
 | Cold start dominated by GPU driver load during device creation | Decode runs in parallel with it; optional stay-resident mode |
 | First thumbnail pass on HDD or network is I/O-bound | Embedded EXIF thumbnails first; persistent local cache makes it a one-time cost |
 | ImGui: non-native look, weaker text input and accessibility; render-on-demand needs discipline | Accepted for speed; Avalonia is the alternative app layer |
-| WebP / HEIC / AVIF depend on installed Windows codec extensions | Detect and report; bundle libwebp if needed |
+| WebP / HEIC / AVIF depend on installed Windows codec extensions | Happened (a HEIC did not open): decoders of its own for these and for raw and JPEG XL, WIC as the fallback (section 9, after M8.1) |
 | Antivirus scanning of a new unsigned exe adds launch latency | Outside the app; sign the exe or add an exclusion |
 
 Not in scope: colour management (ICC profiles). Pixels are shown as sRGB; for comparison the raw

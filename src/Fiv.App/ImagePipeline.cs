@@ -136,7 +136,7 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
             if (!changedOnDisk) return entry;
             Evict(entry);
         }
-        entry = new LoadedImage(want.Path, want.Size, want.Modified, ImageFormats.IsJpegFileName(want.Path));
+        entry = new LoadedImage(want.Path, want.Size, want.Modified, ImageFormats.IsJpegFileName(want.Path) || ImageFormats.IsRawFileName(want.Path));
         _cache[want.Path] = entry;
         return entry;
     }
@@ -144,7 +144,7 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
     /// <summary>Starts, re-prioritises or stops the work of a wanted image so that it matches its rank.</summary>
     void Schedule(LoadedImage e)
     {
-        bool previewPath = e.JpegName && !e.HasNoPreview;
+        bool previewPath = e.PreviewName && !e.HasNoPreview;
         bool havePicture = e.Full != null || e.GpuFull != null;
 
         if (previewPath && !e.PreviewResolved && !havePicture)
@@ -301,7 +301,7 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
                     e.PreviewResolved = true;
                     if (c.Error != null || c.Image == null)
                     {
-                        e.HasNoPreview = true; // not a JPEG after all, too small to reduce, or unreadable: the full decode decides
+                        e.HasNoPreview = true; // not a JPEG or raw after all, too small to reduce, no embedded JPEG, or unreadable: the full decode decides
                     }
                     else if (e.Full != null || e.GpuFull != null)
                     {
@@ -409,7 +409,7 @@ internal sealed unsafe class ImagePipeline(Action wake, long ramBudget, long vra
             {
                 c.FileSize = (long)file.Length;
                 c.Info = ImageDecoding.Probe(file);
-                if (ImageDecoding.PreviewDenominator(c.Info, viewWidth, viewHeight) > 1)
+                if (ImageDecoding.HasPreview(c.Info, viewWidth, viewHeight))
                 {
                     long started = Stopwatch.GetTimestamp();
                     c.Image = ImageDecoding.DecodePreview(file, c.Info, viewWidth, viewHeight, job.CancelFlag);

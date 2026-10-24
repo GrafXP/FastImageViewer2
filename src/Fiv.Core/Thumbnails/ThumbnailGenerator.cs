@@ -1,4 +1,5 @@
 using Fiv.Imaging;
+using Fiv.Native;
 
 namespace Fiv.Thumbnails;
 
@@ -21,8 +22,9 @@ public sealed class Thumbnail(DecodedImage pixels, int width, int height, Orient
 
 /// <summary>
 /// Makes thumbnails from the cheapest source a file offers: the thumbnail embedded in a JPEG's
-/// EXIF block (no decode of the image at all), a reduced-size JPEG decode, or, for everything
-/// else, a decode through WIC that averages down as it goes.
+/// EXIF block (no decode of the image at all), a reduced-size JPEG decode, the JPEG embedded in a
+/// raw, the thumbnail stored in a HEIF file or a reduced decode by the bundled decoders, or, for
+/// everything else, a decode through WIC that averages down as it goes.
 /// </summary>
 public static unsafe class ThumbnailGenerator
 {
@@ -90,21 +92,75 @@ public static unsafe class ThumbnailGenerator
                 DecodedImage? decoded = JpegDecoder.Decode(file.Data, file.Length, denominator, JpegDecodeOptions.FastUpsample, cancel);
                 if (decoded == null) return null;
                 using (decoded)
+                {
+                    (float rangeLow, float rangeHigh) = ImageStatistics.ValueRange(decoded); // (0, 1) but for a grey JPEG of more than 8 bits
+                    using DecodedImage reduced = Resampler.ToBgra(decoded, width, height, rangeLow, rangeHigh);
+                    return new Thumbnail(Resampler.Upright(reduced, info.Orientation), info.Width, info.Height, info.Orientation, embedded: false);
+                }
+            }
+            catch (InvalidDataException)
+            {
+                // A JPEG libjpeg-turbo rejects (CMYK): the Windows codec may still read it.
+            }
+        }
+
+        if (info.PreviewLength > 0)
+        {
+            // A raw: the JPEG the camera made of it, which is what the camera showed as well.
+            try
+            {
+                (int width, int height) = Resampler.FitWithin(info.PreviewWidth, info.PreviewHeight, MasterSize);
+                int denominator = JpegDecoder.ChooseDenominator(info.PreviewWidth, info.PreviewHeight, width, height);
+                DecodedImage? decoded = JpegDecoder.Decode(file.Data + info.PreviewOffset, (nuint)info.PreviewLength, denominator,
+                    JpegDecodeOptions.FastUpsample, cancel);
+                if (decoded == null) return null;
+                using (decoded)
                 using (DecodedImage reduced = Resampler.ToBgra(decoded, width, height))
                     return new Thumbnail(Resampler.Upright(reduced, info.Orientation), info.Width, info.Height, info.Orientation, embedded: false);
             }
             catch (InvalidDataException)
             {
-                // A JPEG libjpeg-turbo rejects (CMYK, 12-bit): the Windows codec may still read it.
             }
         }
 
-        DecodedImage? small = WicDecoder.DecodeReduced(file.Data, file.Length, MasterSize);
+        if (ImageDecoding.NativeFormat(info.Codec) is FivCodecs.Format native)
+        {
+            try
+            {
+                // A thumbnail stored in the file, a reduced decode, or the image in full.
+                DecodedImage? decoded = NativeDecoder.Decode(file.Data, file.Length, native, MasterSize, cancel);
+                if (decoded == null) return null;
+                using (decoded)
+                {
+                    (float rangeLow, float rangeHigh) = ImageStatistics.ValueRange(decoded);
+                    (int width, int height) = Resampler.FitWithin(decoded.Width, decoded.Height, MasterSize);
+                    // Only a raw comes as the sensor has it; the other decoders turn the image upright.
+                    Orientation orientation = info.Codec == ImageCodec.Raw ? info.Orientation : Orientation.Normal;
+                    using DecodedImage reduced = Resampler.ToBgra(decoded, width, height, rangeLow, rangeHigh);
+                    return new Thumbnail(Resampler.Upright(reduced, orientation), decoded.SourceWidth, decoded.SourceHeight, orientation, embedded: false);
+                }
+            }
+            catch (InvalidDataException)
+            {
+                // The Windows codec may still read it.
+            }
+        }
+
+        DecodedImage? small;
+        try
+        {
+            small = WicDecoder.DecodeReduced(file.Data, file.Length, MasterSize);
+        }
+        catch (Exception e) when (ImageDecoding.IsTiff(file) && e is not OutOfMemoryException)
+        {
+            small = null; // a TIFF the Windows codec does not read after all: libtiff, below
+        }
         if (small != null) return new Thumbnail(small, small.SourceWidth, small.SourceHeight, Orientation.Normal, embedded: false);
 
-        // More than 8 bits per channel: decode in full and reduce over the range of values the
-        // image actually uses, as the main view shows it.
-        using DecodedImage full = WicDecoder.Decode(file.Data, file.Length);
+        // More than 8 bits per channel, or a TIFF for libtiff: decode in full and reduce over the
+        // range of values the image actually uses, as the main view shows it.
+        using DecodedImage? full = ImageDecoding.DecodeFull(file, info, cancel);
+        if (full == null) return null;
         (float low, float high) = ImageStatistics.ValueRange(full);
         (int w, int h) = Resampler.FitWithin(full.Width, full.Height, MasterSize);
         return new Thumbnail(Resampler.ToBgra(full, w, h, low, high), full.Width, full.Height, Orientation.Normal, embedded: false);

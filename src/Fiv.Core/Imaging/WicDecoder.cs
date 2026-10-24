@@ -6,7 +6,8 @@ using Windows.Win32.System.Com;
 namespace Fiv.Imaging;
 
 /// <summary>
-/// Decoding through the Windows Imaging Component: everything that is not JPEG.
+/// Decoding through the Windows Imaging Component: PNG, TIFF, BMP, GIF, ICO, JPEG XR, and what the
+/// bundled decoders (<see cref="NativeDecoder"/>) do not read.
 /// 16-bit and float grayscale stay as they are; other formats become BGRA8, or RGBA16 if the
 /// file has more than 8 bits per channel.
 /// </summary>

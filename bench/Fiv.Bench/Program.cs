@@ -28,6 +28,7 @@ return command switch
     "measure" => MeasureCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
     "thumbs" => ThumbsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out")),
     "decode" => DecodeCommand.Run(options.Get("--root", corpus), options.GetInt("--reps", 7), options.GetOrNull("--out")),
+    "formats" => FormatsCommand.Run(options.Get("--root", corpus), options.GetOrNull("--out"), options.GetOrNull("--dump")),
     _ => Help(),
 };
 
@@ -54,6 +55,10 @@ static int Help()
         fivbench thumbs  [--root <dir>] [--out <file.md>]      thumbnails: making them, and reading them back from the pack
         fivbench decode  [--root <dir>] [--reps 7] [--out <file.md>]
                                                               decoder timings on the corpus
+        fivbench formats [--root <dir>] [--out <file.md>] [--dump <dir>]
+                                                              every sample of corpus\formats: decoder, result, timings, and
+                                                              whether the Windows codecs alone open it (bench\tools\get-format-samples.ps1);
+                                                              --dump writes each decode, the viewer's and WIC's, as PNG
         """);
     return 2;
 }

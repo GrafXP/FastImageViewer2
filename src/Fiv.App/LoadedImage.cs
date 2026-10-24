@@ -10,7 +10,7 @@ namespace Fiv.App;
 /// are under way. Owned by <see cref="ImagePipeline"/> and touched only on the UI thread, except
 /// for <see cref="AcquireFile"/>, which the decode workers call.
 /// </summary>
-internal sealed unsafe class LoadedImage(string path, long listedSize, long listedModified, bool jpegName)
+internal sealed unsafe class LoadedImage(string path, long listedSize, long listedModified, bool previewName)
 {
     public string Path { get; } = path;
 
@@ -18,8 +18,11 @@ internal sealed unsafe class LoadedImage(string path, long listedSize, long list
     public long ListedSize { get; set; } = listedSize;
     public long ListedModified { get; set; } = listedModified;
 
-    /// <summary>The name says JPEG, so a preview stage is planned. The content decides in the end.</summary>
-    public bool JpegName { get; } = jpegName;
+    /// <summary>
+    /// The name says JPEG or camera raw (whose embedded JPEG stands in for it), so a preview stage
+    /// is planned. The content decides in the end.
+    /// </summary>
+    public bool PreviewName { get; } = previewName;
 
     /// <summary>Size of the stored image in pixels, before the orientation is applied.</summary>
     public int Width, Height;

@@ -82,6 +82,14 @@ public static unsafe partial class TurboJpeg
     [LibraryImport(Library)]
     public static partial int tj3Decompress8(nint handle, byte* jpegBuf, nuint jpegSize, byte* dstBuf, int pitch, PixelFormat pixelFormat);
 
+    /// <summary>9 to 12 bits per sample, lossy or lossless. <paramref name="pitch"/> in samples.</summary>
+    [LibraryImport(Library)]
+    public static partial int tj3Decompress12(nint handle, byte* jpegBuf, nuint jpegSize, short* dstBuf, int pitch, PixelFormat pixelFormat);
+
+    /// <summary>13 to 16 bits per sample, lossless only. <paramref name="pitch"/> in samples.</summary>
+    [LibraryImport(Library)]
+    public static partial int tj3Decompress16(nint handle, byte* jpegBuf, nuint jpegSize, ushort* dstBuf, int pitch, PixelFormat pixelFormat);
+
     [LibraryImport(Library)]
     public static partial int tj3Compress8(nint handle, byte* srcBuf, int width, int pitch, int height, PixelFormat pixelFormat, byte** jpegBuf, nuint* jpegSize);
 

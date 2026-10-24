@@ -7,16 +7,20 @@ a folder of 95,000 images listed and sorted in 52 ms. Plan, design and all measu
 
 ## Build
 
-Needs the .NET 10 SDK, MSVC Build Tools 2022 with the Windows SDK, CMake and NASM.
+Needs the .NET 10 SDK, MSVC Build Tools 2022 with the Windows SDK, CMake, NASM, Git and Python.
 
 ```powershell
 native\build-libjpeg-turbo.ps1    # once: downloads and builds libjpeg-turbo 3.2.0
 native\build-fivjpeg.ps1          # once: the cancellable JPEG decode shim
+native\build-codecs.ps1           # once: downloads and builds the decoders for HEIF, AVIF, WebP, JPEG XL, raw, TIFF (some 6 minutes)
+native\build-fivcodecs.ps1        # once: fivcodecs.dll, the shim that holds them
 .\build.ps1                       # publishes publish\FastImageViewer2.exe (Native AOT)
 dotnet test tests\Fiv.Tests       # unit tests
+bench\tools\get-format-samples.ps1  # once, for the format tests: 128 sample files of every format, 258 MB, into corpus\formats
 ```
 
-`publish\` then holds `FastImageViewer2.exe`, `cimgui.dll` and `ImGuiImpl.dll`; the three belong together.
+`publish\` then holds `FastImageViewer2.exe`, `cimgui.dll`, `ImGuiImpl.dll`, `fivcodecs.dll` and
+`vcomp140.dll` (the OpenMP runtime the raw decoder uses); the five belong together.
 
 ## Use
 
@@ -28,6 +32,15 @@ publish\FastImageViewer2.exe a.jpg b.jpg c.jpg    # two to sixteen images: compa
 Opening one file also lists its folder, so next and previous walk through it. The folder is
 watched: files added, removed or changed show up by themselves. Starting the viewer again while
 it runs hands the files to the running window.
+
+JPEG (also 12-bit, and lossless up to 16-bit), PNG, TIFF, BMP, GIF, ICO and JPEG XR are read
+through Windows. HEIF and HEIC (also the 10-bit HIF files of cameras), AVIF, WebP, JPEG XL and
+camera raw are read by decoders that come with the viewer, so they open on any machine, whether
+or not the codec extensions from the Microsoft Store are installed: libheif with libde265 and
+dav1d, libwebp, libjxl and LibRaw. TIFFs that Windows does not read or reads wrongly (10, 14, 24
+and 32 bits, signed integers, 16- and 64-bit float, LogLuv) go to libtiff. More than 8 bits per
+channel are kept: as 16-bit values (10 and 12 bits spread over the full range), or as float for
+grey. A raw shows the JPEG its camera embedded at once, and its own pixels a second or two later.
 
 Two to sixteen files opened together, dropped on the window, or selected in a panel are
 compared: side by side, in a grid, one at a time in the same place, or two of
@@ -215,6 +228,7 @@ $bench = 'artifacts\bin\Fiv.Bench\release_win-x64\fivbench.exe'
 & $bench align       # aligning two images: time, and how close to known moves, turns and scalings
 & $bench measure     # measuring: the numbers of an area and the values along a line
 & $bench decode      # decoder timings
+& $bench formats     # every sample of corpus\formats: decoder, result, timings, what Windows alone makes of it (--dump <dir>: as PNG)
 & $bench bakeoff     # the C# vs C++ comparison (bench\bakeoff\build.ps1 first)
 ```
 

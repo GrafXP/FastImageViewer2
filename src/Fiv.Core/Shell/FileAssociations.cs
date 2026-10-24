@@ -45,8 +45,8 @@ public sealed class FileAssociations : IDisposable
 
     /// <summary>
     /// The endings of <see cref="Fiv.Indexing.ImageFormats.Extensions"/>, format by format. The
-    /// ones that are not common decode only with a Windows codec that may not be installed, or
-    /// are files one rarely wants a viewer for.
+    /// ones that are not common are files one rarely wants a viewer for, or that another program
+    /// (a raw developer, an editor) usually opens.
     /// </summary>
     public static readonly FileType[] Types =
     [
@@ -58,16 +58,29 @@ public sealed class FileAssociations : IDisposable
         new("gif", "GIF", "GIF image", true),
         new("webp", "WebP", "WebP image", true),
         new("ico", "Icon", "Icon", false),
-        new("heic", "HEIF", "HEIF image", false), new("heif", "HEIF", "HEIF image", false),
-        new("avif", "AVIF", "AVIF image", false),
+        new("heic", "HEIF", "HEIF image", true), new("heif", "HEIF", "HEIF image", true), new("hif", "HEIF", "HEIF image", true),
+        new("avif", "AVIF", "AVIF image", true),
+        new("jxl", "JPEG XL", "JPEG XL image", true),
         new("jxr", "JPEG XR", "JPEG XR image", false), new("wdp", "JPEG XR", "JPEG XR image", false),
         new("dng", "Camera raw", "DNG raw image", false),
         new("cr2", "Camera raw", "Canon raw image", false), new("cr3", "Camera raw", "Canon raw image", false),
-        new("nef", "Camera raw", "Nikon raw image", false),
-        new("arw", "Camera raw", "Sony raw image", false),
+        new("crw", "Camera raw", "Canon raw image", false),
+        new("nef", "Camera raw", "Nikon raw image", false), new("nrw", "Camera raw", "Nikon raw image", false),
+        new("arw", "Camera raw", "Sony raw image", false), new("srf", "Camera raw", "Sony raw image", false),
+        new("sr2", "Camera raw", "Sony raw image", false),
         new("raf", "Camera raw", "Fujifilm raw image", false),
         new("orf", "Camera raw", "Olympus raw image", false),
-        new("rw2", "Camera raw", "Panasonic raw image", false),
+        new("rw2", "Camera raw", "Panasonic raw image", false), new("rwl", "Camera raw", "Leica raw image", false),
+        new("pef", "Camera raw", "Pentax raw image", false),
+        new("srw", "Camera raw", "Samsung raw image", false),
+        new("3fr", "Camera raw", "Hasselblad raw image", false),
+        new("iiq", "Camera raw", "Phase One raw image", false),
+        new("erf", "Camera raw", "Epson raw image", false),
+        new("mrw", "Camera raw", "Minolta raw image", false),
+        new("x3f", "Camera raw", "Sigma raw image", false),
+        new("dcr", "Camera raw", "Kodak raw image", false), new("kdc", "Camera raw", "Kodak raw image", false),
+        new("mos", "Camera raw", "Leaf raw image", false),
+        new("mef", "Camera raw", "Mamiya raw image", false),
     ];
 
     readonly RegistryKey _software;

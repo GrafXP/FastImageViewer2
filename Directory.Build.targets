@@ -1,23 +1,37 @@
 <Project>
 
   <!-- Native dependencies of executables. Native AOT builds link the static libraries into the
-       exe; JIT builds (tests, benchmarks) load the DLLs from the output directory. -->
-  <ItemGroup Condition="'$(OutputType)' != 'Library' and '$(PublishAot)' == 'true'">
+       exe; JIT builds (tests, benchmarks) load the DLLs from the output directory. Only for C#
+       projects: the C++ projects CMake generates below native\_build pick this file up as well. -->
+  <PropertyGroup>
+    <FivExecutable Condition="'$(OutputType)' != 'Library' and '$(MSBuildProjectExtension)' == '.csproj'">true</FivExecutable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(FivExecutable)' == 'true' and '$(PublishAot)' == 'true'">
     <DirectPInvoke Include="turbojpeg" />
     <DirectPInvoke Include="fivjpeg" />
     <NativeLibrary Include="$(FivJpegDir)bin\fivjpeg-static.lib" />
     <NativeLibrary Include="$(LibJpegTurboDir)lib\turbojpeg-static.lib" />
   </ItemGroup>
-  <ItemGroup Condition="'$(OutputType)' != 'Library' and '$(PublishAot)' != 'true'">
+  <ItemGroup Condition="'$(FivExecutable)' == 'true' and '$(PublishAot)' != 'true'">
     <Content Include="$(LibJpegTurboDir)bin\turbojpeg.dll" Link="turbojpeg.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
     <Content Include="$(FivJpegDir)bin\fivjpeg.dll" Link="fivjpeg.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
+  <!-- The bundled decoders stay a DLL in both, with the OpenMP runtime LibRaw uses: loaded on
+       the first image that needs them. -->
+  <ItemGroup Condition="'$(FivExecutable)' == 'true'">
+    <Content Include="$(FivCodecsDir)bin\fivcodecs.dll" Link="fivcodecs.dll" CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" Visible="false" />
+    <Content Include="$(FivCodecsDir)bin\vcomp140.dll" Link="vcomp140.dll" CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
 
-  <Target Name="CheckNativeDependencies" BeforeTargets="CoreCompile" Condition="'$(OutputType)' != 'Library'">
+  <Target Name="CheckNativeDependencies" BeforeTargets="CoreCompile" Condition="'$(FivExecutable)' == 'true'">
     <Error Condition="!Exists('$(LibJpegTurboDir)lib\turbojpeg-static.lib')"
            Text="libjpeg-turbo is not built. Run native\build-libjpeg-turbo.ps1 once." />
     <Error Condition="!Exists('$(FivJpegDir)bin\fivjpeg-static.lib')"
            Text="The JPEG decode shim is not built. Run native\build-fivjpeg.ps1 once." />
+    <Error Condition="!Exists('$(FivCodecsDir)bin\fivcodecs.dll') or !Exists('$(FivCodecsDir)bin\vcomp140.dll')"
+           Text="The bundled decoders are not built. Run native\build-codecs.ps1 and native\build-fivcodecs.ps1 once." />
   </Target>
 
 </Project>

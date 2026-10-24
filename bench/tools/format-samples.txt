@@ -1,0 +1,131 @@
+# Sample files of every format the viewer opens, fetched into corpus\formats by get-format-samples.ps1
+# and decoded by the FormatSampleTests. Columns: path below corpus\formats, URL, SHA-256 ("-": printed
+# on the first download, to be filled in), and what the file tests.
+jpeg/baseline.jpg https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/3.2.0/testimages/testorig.jpg acc6ec555d41d15b368320edaa3b20958ee6fa97cb6e4a18d1213d5ae8bec73b baseline, 4:2:0
+jpeg/progressive.jpg https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/3.2.0/testimages/testimgint.jpg 491679b8057739b3c8e5bacd1e918efb1691d271cbbd69820ff8d480dcb90963 progressive
+jpeg/arithmetic.jpg https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/3.2.0/testimages/testimgari.jpg 4672c7f08864cd0a8c73a4fa4b66ca32b635d38464551c1ecf06564ae8c89b38 arithmetic coding
+jpeg/12bit.jpg https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/3.2.0/testimages/monkey12.jpg a3cb218412cecfa877a4adee520aa3d58ac0d6d0f36a7a2541e598324ce481e3 12 bits per sample
+jpeg/cmyk.jpg https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/pil_sample_cmyk.jpg 1086f923d60bb5d6c4f2d3f7f56ba5d315d98e6f19ee8c8797dabac630c8ae80 CMYK (Adobe)
+jpeg/orientation-6.jpg https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper_orientation_6.jpg 2e78bb18895fa23eddbb2afa1228950700d97e4ef9d7bfae6935604d01eb1b61 EXIF orientation 6
+jpeg/orientation-8.jpg https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper_orientation_8.jpg 5a78762a2822209d7e877ac15996a46f91b789111faff3c4db07949860aa15ab EXIF orientation 8
+jpeg/16bit-qtables.jpg https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper_16bit_qtables.jpg 541ceb40f9340de2ab1d6972653237b154454a1fb8fdd7c0203057d027c82c3f 16-bit quantisation tables
+jpeg/rgb-u2.jpg https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/rgb.u2.jpg 848cd3d7845c49abe3f1066ef84f6f16e1e42cba3cfa992ceb8b2978dcd51d7c more than 8 bits, RGB
+jpeg/gray-u2.jpg https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/gray.u2.jpg 53f920bcdc58f8f6f80b4e8920694e64d3c988fbaa1d7e45a14f6baccb211a04 more than 8 bits, grey
+png/gray-1bit.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/basn0g01.png c23c1848002082e128f533dc3c24a49fc57329293cc1468cc9dc36339b1abcac 1-bit grey
+png/gray-16bit.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/basn0g16.png f26eb27e99300829c42c0832acd26fa499e0f317cb4d6f165e6663024b16bf6c 16-bit grey
+png/rgb-16bit.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/basn2c16.png 71179d2905aadb86adc25de7f737869b52e80e154c5335f5e6b614942515b2d4 16-bit RGB
+png/palette-2bit.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/basn3p02.png 784508d49be8187c6e0126f942cce65202616384f7d0a3a112d8ce01c6c8a413 2-bit palette
+png/gray-alpha-16bit.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/basn4a16.png 51896523625b1ffea7464e954e13cfff1c596c8e2c46925270dc408315e7fe71 16-bit grey and alpha
+png/rgba-16bit.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/basn6a16.png 569040d3237a5552935a44b8bbe165cf02afe0d71caf30fba81955922ac9373f 16-bit RGBA
+png/rgba-16bit-interlaced.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/ibasn6a16.png 35eea9e75f8a4abb003a5f6c265078ef779856c75f5d68fda26ec55f322f497d Adam7 interlaced 16-bit RGBA
+png/trns.png https://raw.githubusercontent.com/pnggroup/libpng/libpng16/contrib/pngsuite/ftbrn2c08.png 8223d8b0c5f84b149f0c1f0e1f658346e07fcbd03ffc02b2e9eeea1481eb19bf tRNS transparency
+png/monkey-16bit.png https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/3.2.0/testimages/monkey16.png 25bdb669629dd321a7a3d55d4693ee01a74dadd283f69cbe64afa3fd859895f8 16-bit photograph
+tiff/rgb-8.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-08.tif dd1333eb93d8e7ea614b755ca1c8909c67b4b44fc03a8cab6be5491bf4d15841 8-bit RGB
+tiff/rgb-10.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-10.tif 68168ea1c2e50e674a7c5c41e5b055c881adf8cb940d0fd033a927a7ebdd7b6f 10-bit RGB
+tiff/rgb-12.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-12.tif 5f7a63eb8636e2b1ee39dfda4d0bddfc98bdc9eb94bea2dd657619331fa38b5b 12-bit RGB
+tiff/rgb-14.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-14.tif a419a8e2f89321501ca8ad70d2a19d37a7bf3a8c2f45c809acc30be59139ae29 14-bit RGB
+tiff/rgb-16.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-16.tif ab3d6b619a198ff2e5fdd8f9752bf43c5b03a782625b1f0e3f2cfe0f20c4b24a 16-bit RGB
+tiff/rgb-24.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-24.tif bbb2b4ca6d7eeee4737c6963c99ef68fb6971cf6ccee463427a8246574bc6440 24-bit RGB
+tiff/rgb-32.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-contig-32.tif d7b9da8ec44da84fc89aed1ad221a5eb130a1f233a1ff8a4a15b41898a0e364f 32-bit integer RGB
+tiff/rgb-planar-16.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-rgb-planar-16.tif 0a143fb6c5792fa7755e06feb757c745ad68944336985dc5be8a0c37247fe36d 16-bit RGB, planar
+tiff/gray-16.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-minisblack-16.tif 79531a10710dee89b86e2467818b7c03a24ff28ebd98c7bdcc292559671e1887 16-bit grey
+tiff/palette-8.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-palette-08.tif 1a05a3e39e3f58e48e3667e8cca3613476752e2defe0af80c07faf2bb00d7812 8-bit palette
+tiff/cmyk-16.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/depth/flower-separated-contig-16.tif 6dc012a88f3ba41d6326c5211543e21f21e6f5d1faaea4c59018da93317d9462 16-bit CMYK
+tiff/logluv.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/off_luv32.tif 9ffc561bbbd27969715d9f52e7c5cfbeba0d37c6542f0a350de881b0ea6dac63 LogLuv HDR
+tiff/ycbcr.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/ycbcr-cat.tif 264d4955898a35ae70af0ec6eed0dbc49d7929f6c18c92a4ed6198f6db396f4b YCbCr
+tiff/jpeg.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/quad-jpeg.tif 61f858392d372b9af0200901ab147d1103bc3e2c811df9ea7ea8dfe2d1d47b06 JPEG compressed
+tiff/fax.tif https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/libtiffpic/fax2d.tif 4e497620740a6c192ac9523817c9e51ba3596d5ab8b4ac1a15e8cc58e9a49b3f CCITT fax, 1 bit
+tiff/rgba-16-tiled-planar.tiff https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/tiff_tiled_planar_16bit_RGBa.tiff e744f2e9b4e55b808c307d6729c318fe89b211d000941ac800fcb496907bfe17 16-bit RGBA, tiled, planar
+tiff/cmyk-jpeg.tif https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/tiff_strip_cmyk_jpeg.tif a5fd8b842c1b6b4811fae7a67b96e62ba72dba269e837754540ba8aa7a33a3c3 CMYK, JPEG compressed
+tiff/lab.tif https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper.Lab.tif eb37c52b5a8726daeba9e17545da28f9f903faea6ce043b81bcf44def946e1c5 CIE Lab
+tiff/gray-float16.tif https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/tiff/gray.f2.tif 47f15501518734e0a493d7cc43d092768aca7caa38e94a60324623e8c54e3298 16-bit float grey
+tiff/gray-float32.tif https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/tiff/gray.f4.tif 56589f7b10bccd8e549f5c76241c8f558dba57d0b768a74ba02583bc94d4666e 32-bit float grey
+tiff/gray-float64.tif https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/tiff/gray.f8.tif 47a314a731bcb7855ddbf94d761a5b5c6d96e507df4dc8b9f2a5e9e86ba1a171 64-bit float grey
+bmp/pal1.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/g/pal1.bmp c631861fa4c4e959d2abc6e0db0106253989b0101223cb08020e116e19c97f77 1-bit palette
+bmp/pal4rle.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/g/pal4rle.bmp 3c26b6bdd22311e03b1ac0713b0a3b6af5e579bef16694cbea74ae0c4a2599e4 4-bit palette, RLE
+bmp/pal8v5.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/g/pal8v5.bmp 65ac4a579189d2fc30b3499b8246f30127e032f35d6cde90335dafe87a1b23c3 8-bit palette, version 5 header
+bmp/rgb16-565.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/g/rgb16-565.bmp c2ffadac9c1239fb397834415c7b5f85d5c6044bd9c31fa66e23056a19b82b1d 16-bit 5-6-5
+bmp/rgb24.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/g/rgb24.bmp a9c4fbfbf8cb6df8d2d9d1484359d037aebd25078b21137bfd6c69739fcbe2e1 24-bit
+bmp/rgb32bf.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/g/rgb32bf.bmp 4c1189e3a039b1e5aae6347024684937c495a5736a3c309dc7c2e3c161f89751 32-bit bit fields
+bmp/rgba32abf.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/q/rgba32abf.bmp 1d2183466e05c768b5a9d2ce5d132d72db2272bb331c7b27560d24f197f4165e 32-bit with alpha
+bmp/rgba64.bmp https://entropymine.com/jason/bmpsuite/bmpsuite/q/rgba64.bmp 7ed0abd84562c5e9eb4661dac8e1dff39b50eb011c106db6b670f28d6181ac49 64-bit RGBA
+gif/static.gif https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper.gif 19b8e092eee2eab632a36ee5644e362cb751cecaadb40bf4615334f3ffc6f1a5 still
+gif/animated.gif https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/iss634.gif 3ad971599fa36b013c0a6f4da76effbbda3cd98961bfe9bb2951c7930baaee76 animated
+gif/transparent.gif https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/transparent.gif 19f52ee71b5a4f329ccadfb4677be66828cbf09aea4f840f2e609786056aaf7a transparency
+webp/lossy.webp https://www.gstatic.com/webp/gallery/1.webp 4a5afeaff8483923da964bc7896f02d0283e8bff99b5b8f82a31ae3214dab1d0 lossy
+webp/lossless-alpha.webp https://www.gstatic.com/webp/gallery3/1_webp_ll.webp 49a902b9c35bd2031bf26234c59ff369dd3ae18a3b58247285104a23346ba2d4 lossless with alpha
+webp/lossy-alpha.webp https://www.gstatic.com/webp/gallery3/1_webp_a.webp 31090d2cdaa455d4153829074f2c91228964a83f86503600360b86d5d57160c3 lossy with alpha
+webp/animated.webp https://www.gstatic.com/webp/animated/1.webp 8afc28fef9bba14b5eecbbc6bb8b4379dc96b6ebc3e0845607ced41b7dda337c animated
+webp/animated-2.webp https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/iss634.webp e000f2c68d1dcbe0cb9b399e6f67031e624f9f1769950efad94e45596cf96f19 animated
+ico/multi-size.ico https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/pillow.ico 0d146dac2fac1e64fdb844582e2ae6523ebb3f9e2ce759ac1a83993908ff9d89 several sizes
+ico/256-png.ico https://raw.githubusercontent.com/python-pillow/Pillow/main/Tests/images/hopper_256x256.ico 71dfe362ff672736af9424861a4bf134f1c59219d97198f9abcdd398505d52e2 256 pixels
+heif/single.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C002.heic 2b836102e528f7b465b295724b6928c5725a5ac3fe326c6bb54e5e8a18fc180f one image (Nokia C002)
+heif/alpha.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C006.heic 41699c9a89dacb7a9536f43ae98f6554b9f272feb7397174cdc38b25387d7934 alpha plane (C006)
+heif/grid.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C007.heic 789ef64b3dfc7d39c38c407da8329642dcccb90473228c04ab6826c390ca4345 grid of four (C007)
+heif/grid-3x2.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C025.heic 8921aa6ccb29aa49a1122c602cdcbecb0a2dcdcae3cd1422631ac794bad72a69 grid of six (C025)
+heif/rotate-crop.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C014.heic 4acf8abc58bd5a8f9cc4e4f05e01a3712934d2a86824dd2ff65d3c92d8060176 irot 90 and clap (C014)
+heif/mirror.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C042.heic ac0c075dfe02520fabc3d1b078d8502eabf950e77011a663dbd9015fbb886aeb imir (C042)
+heif/overlay.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C016.heic 0a8bc81b1ba4b8437e527a9fe3b254fe48933b0b5672ff6a23177f76b24950fb overlay on a canvas (C016)
+heif/exif.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C034.heic 169723f97f11c67a8568404090fe9d54f8cf4621b51d3e01f24c4500e8090de8 EXIF (C034)
+heif/sequence-only.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/C026.heic c2561b8da054723a5e85e4f551620c00e956d86bc07053c8ff44309c829876cd image sequence, no still image (C026)
+heif/miaf-advanced.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/MIAF002.heic 006baff837e3a8736154206f901a6595b0951eb62e282463e7dfc4a33c3da775 MIAF HEVC advanced profile
+heif/miaf-extended.heic https://raw.githubusercontent.com/nokiatech/heif_conformance/master/conformance_files/MIAF003.heic 499c8ef32ff744f42b06cc89d6404dcc3754043d2251f4b6f8fedf2f6f04a513 MIAF HEVC extended profile
+heif/example.heic https://raw.githubusercontent.com/strukturag/libheif/v1.23.6/examples/example.heic 7f8b363e4936c0666a25f64f3a92fda10bd8e5453be4592530b65a55dd98f3f2 libheif example
+heif/rgb-10bit.heif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif/RGB_10__128x128.heif 7fbf1573c1e5c1693953b31bb287327c53eaefa74a6f1324e7391a08b3ed1e73 10-bit RGB
+heif/rgb-12bit.heif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif/RGB_12__128x128.heif 92c048d4bead7eebd3e0da5cb13a2e286cccbde3acb23580ee9c5f6b4cfde812 12-bit RGB
+heif/rgba-10bit.heif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif/RGBA_10__128x128.heif ca7bc70f1d8b1103e7094c3758a70991ad31e2cbcabb02f4ec7e79e5a6d4bc5f 10-bit RGBA
+heif/rgba-12bit-odd.heif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif/RGBA_12__29x100.heif 92fd6e2154a8ed5b8c07edc969869fb038b95e4dff742f04da6b6eeeef556378 12-bit RGBA, odd size
+heif/gray-10bit.heif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif/L_10__128x128.heif 48287d8982f06a647674c8e1e9b557d829fc21111da34ee06e1dc750505edf74 10-bit grey
+heif/gray-alpha-8bit.heif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif/LA_8__29x100.heif e45fdefe5740f4ed5d1e4f9b6f7a9d87d5e69fe26d10e2a90b36c1b6aa0234c3 8-bit grey and alpha
+heif/camera-10bit.hif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif_other/cat.hif 3a396202a8bb50c5cccbfd89d3cf6ef0a0fa47794afd785693d882edc2eb30b7 camera HIF, 10 bits
+heif/camera-rotated.hif https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif_special/guitar_cw90.hif f0d5e88be07b9d70a3715218ca612ccf45b126e5b4b42172dce14a62d2099932 camera HIF, turned 90 degrees
+heif/phone.heic https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif_other/pug.heic 1ddce96766efbfa0f6bdf634bdab26bdeff831393df8d67f4cdc7b7a7afebc67 phone photograph
+heif/xiaomi.heic https://raw.githubusercontent.com/bigcat88/pillow_heif/master/tests/images/heif_special/xiaomi.heic cb5c7d9131931df4abd9bfe1c3de47617b68d1fae54a1c367fc5981ffea6aeed Xiaomi phone
+heif/photo.heic https://raw.githubusercontent.com/AcademySoftwareFoundation/OpenImageIO-images/main/heif/greyhounds-looking-for-a-table.heic 65960bf2782cd8ebd29a958e75b6adb7dff2bbff841389e869d917438c729010 photograph
+avif/8bit-420.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/fox.profile0.8bpc.yuv420.avif d0ca9be129d6d06a65f7e852388c9d017b23bf5349af166634a6dacd567dd5e9 8 bits, 4:2:0
+avif/10bit-420.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/fox.profile0.10bpc.yuv420.avif 3f64c834081df61854d514fab050998cae2d236952c3f4d8c9fc18d99965c820 10 bits, 4:2:0
+avif/10bit-422.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/fox.profile2.10bpc.yuv422.avif fc4995d5ad3ffcb36e97fcd75b4c7c0d0baf5e223016c9b8411b5680fd994357 10 bits, 4:2:2
+avif/12bit-444.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/fox.profile2.12bpc.yuv444.avif f3e7adaa9d16c74837a83ee2981a95321fc375e9478183f5841d1de43b261f4c 12 bits, 4:4:4
+avif/10bit-mono.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/fox.profile0.10bpc.yuv420.monochrome.avif c711b4a89cee3b8e9094176e6aa0dbd2329922cb102f056caa73feab0c1568b2 10 bits, monochrome
+avif/8bit-444-odd.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/fox.profile1.8bpc.yuv444.odd-width.odd-height.avif 8f466c807a2215a66d8c03786eef6bf1778bf64dabf75917d7ab62dac2aabde7 odd width and height
+avif/rotate90.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/kimono.rotate90.avif e609c14b5915c0bcfd8f041e2bc6e5df755c8a83c9ad2f95ca0b576625d730e9 irot 90
+avif/rotate90.png https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/kimono.rotate90.png 1a73c61692abe96d0a7a9accdb36a83d51bceac79bbb83a00571570f494cca49 what rotate90.avif must look like
+avif/mirror-rotate.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/kimono.mirror-vertical.rotate270.avif b48d960e16698adbeef4950e1ab2745bdc5c688f9e2b72d549797e7e8112456b imir and irot 270
+avif/mirror-rotate.png https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/kimono.mirror-vertical.rotate270.png 74b9b7ffa8955761f747a0e6e81d5b7ecb5e325383546110e1b6aa9986728035 what mirror-rotate.avif must look like
+avif/crop.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/kimono.crop.avif 4133f67c39a87a7dee5dbf598d480429003564c09bbbdea0b0e92a84a5bb3fa1 clap
+avif/crop.png https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Link-U/kimono.crop.png 0d5605bae0ec9d39aad9dc8e1a371d0327c6a224643983e3ee1f4d44cb00f19d what crop.avif must look like
+avif/alpha.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Microsoft/bbb_alpha_inverted.avif 83d68084a93f043a89d10373f0ca26dafc988eec811b8076cabb2ff1580c1817 alpha
+avif/grid.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Microsoft/Summer_in_Tomsk_720p_5x4_grid.avif c9148149b108f5fbce7300903bd59937bfc4c677f2ce359668ad664adb18ec2f grid of 5 by 4
+avif/monochrome.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Microsoft/Monochrome.avif deeb37c2cf321d3ccacff085a6fed50cc774dd38d7ed271c15517ccd01bd7a4f monochrome
+avif/10bit-hdr.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Microsoft/Chimera_10bit_cropped_to_1920x1008_with_HDR_metadata.avif b52996d7dc8bde2145770fc1977ccd45e7faf78c561599f325b48669d5ff6aee 10 bits with HDR metadata
+avif/hdr-pq.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Netflix/avif/hdr_cosmos01000_cicp9-16-9_yuv420_limited_qp20.avif f19e45e9ca910f88ecb8688b146acf4c7cd8508d763b271b8b98b2ba39808f99 PQ, BT.2020, limited range
+avif/sequence-alpha.avif https://raw.githubusercontent.com/AOMediaCodec/av1-avif/main/testFiles/Netflix/avis/alpha_video.avif 493d6325d1981f7c98074266f91c5119599271396f6e9a0670c16904ead9113d image sequence with alpha
+jxl/lossy.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/bicycles/input.jxl 8ef03ccccb45bdb5f3d37c9a4c392f745e3e4ad7f4ffc2cbc1e1ba68487a75a6 lossy (XYB), 8 bits
+jxl/progressive.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/progressive/input.jxl bb4722ab780dce609a7b007fe7fe235962b351691f60ffb2cde7b4808c8601e1 progressive
+jxl/float32.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/lossless_pfm/input.jxl 61ae52b5851ab2e156aec1d22502e8e1ec0cdf6bc0d6a3956ac6d7d6d2969d5e lossless 32-bit float
+jxl/10bit-alpha.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/sunset_logo/input.jxl 6617480923e1fdef555e165a1e7df9ca648068dd0bdbc41a22c0e4213392d834 10 bits with alpha
+jxl/12bit-alpha.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/alpha_premultiplied/input.jxl 5028e630dc358bf4031cbf06e8a80f2bfbfa21fd0d088af74d83b473d3dd540a 12 bits, premultiplied alpha
+jxl/16bit-spot.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/spot/input.jxl 69d48f7ace25683db9eb908f112cef112bd1583870abab0fbf166018889893fa 16 bits, spot colours
+jxl/gray.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/grayscale/input.jxl 78fbbba852e99946d187dcf0bcbd7fb0e7c22be2f0852523aaae6ed91e7e3c39 grey
+jxl/cmyk.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/cmyk_layers/input.jxl d732c8836bf1abeadf310d2e07387a32813ed4690d32650c1c25e541b80eed4a CMYK, layers
+jxl/oriented.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/bench_oriented_brg/input.jxl e223fed907c6238622b2b6ec1c80609050c9d2db4d759cf3ca6f0db304cbb82a orientation
+jxl/animated.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/animation_icos4d/input.jxl 6df934e61b07779626988daa0c4a9f05f89e6142a030f915e8b8ea52c37b3fe2 animated
+jxl/patches-lossless.jxl https://raw.githubusercontent.com/libjxl/conformance/master/testcases/patches_lossless/input.jxl 2a47b6766264ac6243a43bbb85684688717591bb3bd9b4c2db56226192418b4e lossless with patches
+jxl/hdr-pq.jxl https://raw.githubusercontent.com/libjxl/testdata/main/jxl/pq_gradient.jxl b37c9cd69b62458a3d5fb4efc2efe9f6da8e434db4772d9e03cbbf0d50945193 PQ
+jxr/fixed-point.jxr https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/fixedpoint.jxr d290fbe9163048735fb1a724e3ef38a6276679a9f6800451b7d6ddc357604fb9 fixed point
+jxr/rgba32.jxr https://raw.githubusercontent.com/cgohlke/imagecodecs/master/tests/data/rgba32.jxr d16a15237213c993370fb5a6dd5071c7f02d1d9c50348b75849f5c10fb63f48d RGBA
+raw/canon.cr2 https://raw.pixls.us/getfile.php/5067/nice/Canon%20-%20EOS%20M2%20-%20RAW%20(3:2).cr2 6d26eeb1e8a5978c7cb9d8beb6e6e34f3c27847055b76bc7f186503ca44508d0 Canon EOS M2
+raw/canon.cr3 https://raw.pixls.us/getfile.php/8963/nice/Canon%20-%20EOS%20R6%20Mark%20III%20-%20RAW%20(3:2).CR3 1f533686b2230817dac98266a6cc8ffd960413c109965768b7efc05cc1ca96eb Canon EOS R6 Mark III
+raw/canon-craw.cr3 https://raw.pixls.us/getfile.php/8964/nice/Canon%20-%20EOS%20R6%20Mark%20III%20-%20CRAW%20(3:2).CR3 7e1a5d84297a52853b0bbe5a5c03a5d4f5b93e00b7020271523240f9cabfe50e Canon EOS R6 Mark III, compressed raw
+raw/canon.crw https://raw.pixls.us/getfile.php/4226/nice/Canon%20-%20PowerShot%20G6%20-%20RAW%20(4:3).CRW 244378e1f5660b6cc6cefc93a75ed4928d0b28aa6304ff327b61c748538f4fef Canon PowerShot G6
+raw/nikon.nef https://raw.pixls.us/getfile.php/8559/nice/Nikon%20-%20Z%20fc%20-%2012bit%20compressed%20(Lossless)%20(3:2).NEF a213f29e52f02c0155030d204bf885c7b85ae65a78057a751ccb3ade2d141798 Nikon Z fc, lossless compressed
+raw/sony.arw https://raw.pixls.us/getfile.php/6936/nice/Sony%20-%20ILCE-7M4%20-%2014bit%20(3:2).ARW 639a6d4db881f1359e3ea7e1137b314e59417d24e6d4d862b7202111a2c823b2 Sony ILCE-7M4
+raw/sony-a7v.arw https://raw.pixls.us/getfile.php/8849/nice/Sony%20-%20ILCE-7M5%20-%2014bit%20(3:2).ARW c16cae99d26a2f8ad183d31a23823310a994aa058d55cfe56e4f82ba56865f57 Sony ILCE-7M5 (A7 V), newer than LibRaw 0.22.2: not supported
+raw/fujifilm.raf https://raw.pixls.us/getfile.php/8771/nice/Fujifilm%20-%20X-T30%20III%20-%2014bit%20compressed%20(3:2).RAF 1910b95422240f97781fa3296d67a56cc8f62de63144ac11cbf4267a11278042 Fujifilm X-T30 III, X-Trans
+raw/olympus.orf https://raw.pixls.us/getfile.php/8549/nice/OM%20System%20-%20OM-5%20Mark%20II%20-%2016bit%20(4:3).ORF c6fe861982ddc18464cf6858d2700f6813cc3a17956bcb12d1179212c999c76a OM System OM-5 Mark II
+raw/panasonic.rw2 https://raw.pixls.us/getfile.php/9550/nice/Panasonic%20-%20DC-FZ83%20-%203:2.RW2 14ad44ee2f18aae56746a25e4c69b7bc35e91b9fc5efae8e1cfa763f622895f8 Panasonic DC-FZ83
+raw/pentax.dng https://raw.pixls.us/getfile.php/8172/nice/Pentax%20-%20K-r%20-%2012bit%20(3:2).DNG adc5c155341543e2e5c6de9c0ce87c86cc4629fe90a0f6e68fdf685dcd531b64 Pentax K-r, DNG
+raw/dji.dng https://raw.pixls.us/getfile.php/7823/nice/DJI%20-%20FC4382%20-%2016bit%20(4:3).DNG f33ddaf2a7fa70b395abced251faccea11100d2ab7e54ae0a6adbff043d72027 DJI drone, DNG
+raw/pentax.pef https://raw.pixls.us/getfile.php/8171/nice/Pentax%20-%20K-r%20-%2012bit%20compressed%20(3:2).PEF dd0d7b76d89039995d253adddcfb44d131414fad2179610d9ea4d8d4bb876b7b Pentax K-r
+raw/samsung.srw https://raw.pixls.us/getfile.php/6854/nice/Samsung%20-%20NX3300%20-%2012bit%20(3:2).SRW c56a6f57caa53c99df6c59943670d2fe422d2cb543d9d21cff95ec0ff2f70381 Samsung NX3300
+raw/sigma.x3f https://raw.pixls.us/getfile.php/4462/nice/Sigma%20-%20SIGMA%20SD14%20-%203:2.X3F c32f247eb372c3e66ad3b433518ec11f898fdc317c8432ebe025b46d4917bcf3 Sigma SD14, Foveon
