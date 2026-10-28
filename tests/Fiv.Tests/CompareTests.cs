@@ -99,6 +99,7 @@ public class CompareGeometryTests
     [InlineData(CompareMode.Grid, false, true)]
     [InlineData(CompareMode.Split, true, false)]
     [InlineData(CompareMode.Blend, true, false)]
+    [InlineData(CompareMode.Overlay, true, false)]
     [InlineData(CompareMode.Checker, true, false)]
     [InlineData(CompareMode.Difference, true, false)]
     [InlineData(CompareMode.Ssim, true, false)]
@@ -106,6 +107,114 @@ public class CompareGeometryTests
     {
         Assert.Equal(overlay, mode.IsOverlay());
         Assert.Equal(panes, mode.HasPanes());
+        Assert.Equal(mode is CompareMode.Split or CompareMode.Blend or CompareMode.Overlay or CompareMode.Checker, mode.IsStack());
+        Assert.Equal(mode is CompareMode.Difference or CompareMode.Ssim, mode.IsPairwise());
+    }
+
+    [Theory]
+    [InlineData(2, 2000, 1000, 6000, 4000, 2, 1)]  // two as before: next to each other in a wide view
+    [InlineData(2, 1000, 2000, 6000, 4000, 1, 2)]  // above each other in a tall one
+    [InlineData(4, 3000, 1000, 6000, 4000, 4, 1)]  // side by side is one row, never a grid
+    [InlineData(4, 1000, 3000, 6000, 4000, 1, 4)]  // or one column, if that shows them larger
+    [InlineData(1, 2000, 1000, 6000, 4000, 1, 1)]
+    public void SideBySideIsOneRowOrOneColumn(int count, int areaWidth, int areaHeight, int canvasWidth, int canvasHeight, int columns, int rows) =>
+        Assert.Equal((columns, rows), CompareGeometry.BestRow(count, areaWidth, areaHeight, canvasWidth, canvasHeight, 2));
+
+    [Fact]
+    public void TwoImagesTakeTurnsOnTheCheckerboardAsBlackAndWhiteSquaresDo()
+    {
+        for (int y = -3; y < 3; y++)
+        for (int x = -3; x < 3; x++)
+            Assert.Equal(((x + y) % 2 + 2) % 2, CompareGeometry.CheckerLayer(x, y, 2));
+        Assert.Equal(0, CompareGeometry.CheckerLayer(5, 7, 1));
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(9)]
+    [InlineData(16)]
+    public void OnTheCheckerboardOfSeveralImagesEveryImageHasCellsAndNoTwoNeighboursAreTheSame(int layers)
+    {
+        var seen = new HashSet<int>();
+        for (int y = -8; y < 8; y++)
+        {
+            for (int x = -8; x < 8; x++)
+            {
+                int layer = CompareGeometry.CheckerLayer(x, y, layers);
+                Assert.InRange(layer, 0, layers - 1);
+                seen.Add(layer);
+                Assert.NotEqual(layer, CompareGeometry.CheckerLayer(x + 1, y, layers));
+                Assert.NotEqual(layer, CompareGeometry.CheckerLayer(x, y + 1, layers));
+                // Across a corner too, once there are four images or more.
+                if (layers >= 4) Assert.NotEqual(layer, CompareGeometry.CheckerLayer(x + 1, y + 1, layers));
+                if (layers >= 4) Assert.NotEqual(layer, CompareGeometry.CheckerLayer(x + 1, y - 1, layers));
+            }
+        }
+        Assert.Equal(layers, seen.Count);
+    }
+}
+
+public class OverlayMixTests
+{
+    /// <summary>The passes drawn as the GPU draws them: the first over the background, each after it over what is there.</summary>
+    static double Layered(double background, double[] colors, float[] passes)
+    {
+        double result = background;
+        for (int k = 0; k < colors.Length; k++) result += (colors[k] - result) * passes[k];
+        return result;
+    }
+
+    /// <summary>The overlay as it is meant: each image by its opacity, covering what layers of those opacities would.</summary>
+    static double Meant(double background, double[] colors, float[] opacities)
+    {
+        double sum = 0, weight = 0, through = 1;
+        for (int k = 0; k < colors.Length; k++)
+        {
+            sum += opacities[k] * colors[k];
+            weight += opacities[k];
+            through *= 1 - opacities[k];
+        }
+        return weight > 0 ? background * through + sum / weight * (1 - through) : background;
+    }
+
+    [Theory]
+    [InlineData(new[] { 1f, 1f, 1f, 1f })]
+    [InlineData(new[] { 0.5f })]
+    [InlineData(new[] { 0.3f, 0.9f, 0.6f })]
+    [InlineData(new[] { 0f, 0.4f, 0f, 1f, 0.2f })]
+    [InlineData(new[] { 0f, 0f })]
+    [InlineData(new[] { 1f, 0.25f, 1f, 0.75f, 0.5f, 1f, 0.1f, 0.9f })]
+    public void LayerOverLayerWithThePassOpacitiesIsTheOverlay(float[] opacities)
+    {
+        float[] passes = new float[opacities.Length];
+        OverlayMix.PassOpacities(opacities, passes);
+        Assert.All(passes, pass => Assert.InRange(pass, 0, 1));
+        var random = new Random(opacities.Length);
+        for (int trial = 0; trial < 20; trial++)
+        {
+            double background = random.NextDouble();
+            double[] colors = [.. Enumerable.Range(0, opacities.Length).Select(_ => random.NextDouble())];
+            Assert.Equal(Meant(background, colors, opacities), Layered(background, colors, passes), 5);
+            // In any order: what the overlay is does not depend on it.
+            int[] shuffled = [.. Enumerable.Range(0, opacities.Length).OrderBy(_ => random.Next())];
+            float[] reordered = [.. shuffled.Select(i => opacities[i])];
+            float[] reorderedPasses = new float[opacities.Length];
+            OverlayMix.PassOpacities(reordered, reorderedPasses);
+            Assert.Equal(Meant(background, colors, opacities), Layered(background, [.. shuffled.Select(i => colors[i])], reorderedPasses), 5);
+        }
+    }
+
+    [Fact]
+    public void AllOpaqueIsAnEqualMixAndOneAloneIsItsOwnTransparency()
+    {
+        float[] passes = new float[4];
+        OverlayMix.PassOpacities([1, 1, 1, 1], passes);
+        Assert.Equal(1.0, Layered(0, [4, 0, 0, 0], passes), 6); // a quarter of each
+        Assert.Equal(1.0, Layered(0, [0, 0, 0, 4], passes), 6);
+        OverlayMix.PassOpacities([0, 0.5f, 0, 0], passes);
+        Assert.Equal(0.6, Layered(0.2, [9, 1, 9, 9], passes), 6); // half of it over the background, the others not there
     }
 }
 
@@ -118,12 +227,19 @@ public class CompareSelectionTests
         return selection;
     }
 
+    static int[] Order(CompareSelection selection)
+    {
+        int[] order = new int[selection.Count];
+        return order[..selection.Order(order)];
+    }
+
     [Fact]
     public void StartsAtTheFirstImageComparedWithTheSecond()
     {
         CompareSelection selection = Of(3);
         Assert.Equal((0, 1), (selection.Active, selection.Other));
-        Assert.Equal((0, 1), selection.Pair);
+        Assert.Equal(0, selection.Reference);
+        Assert.Equal([0, 1, 2], Order(selection));
     }
 
     [Fact]
@@ -131,7 +247,131 @@ public class CompareSelectionTests
     {
         CompareSelection selection = Of(4, active: 2);
         Assert.Equal((2, 0), (selection.Active, selection.Other));
-        Assert.Equal((0, 2), selection.Pair);
+        Assert.Equal(0, selection.Reference); // the reference is the first image, whichever one the set starts at
+    }
+
+    [Fact]
+    public void EveryImageIsShownAndAllButTheReferenceMove()
+    {
+        CompareSelection selection = Of(4);
+        Assert.Equal(4, selection.ShownCount);
+        Assert.True(Enumerable.Range(0, 4).All(selection.IsShown));
+        Assert.Equal([false, true, true, true], Enumerable.Range(0, 4).Select(selection.Moves));
+    }
+
+    [Fact]
+    public void TheViewsTakeTheShownImagesBeginningWithTheReference()
+    {
+        CompareSelection selection = Of(5);
+        Assert.True(selection.SetShown(1, false));
+        Assert.True(selection.SetReference(3));
+        Assert.Equal([3, 4, 0, 2], Order(selection)); // on through the set and round its end, without the one taken out
+        Assert.False(selection.IsShown(1));
+    }
+
+    [Fact]
+    public void TheReferenceAndTheLastImageStayShown()
+    {
+        CompareSelection selection = Of(3);
+        Assert.False(selection.SetShown(0, false)); // the reference
+        Assert.True(selection.SetShown(1, false));
+        Assert.True(selection.SetShown(2, false));
+        Assert.Equal(1, selection.ShownCount);
+        Assert.True(selection.SetReference(2)); // a reference taken out comes back in
+        Assert.True(selection.IsShown(2));
+        Assert.True(selection.SetShown(0, false));
+        Assert.False(selection.SetShown(2, false)); // the last one left, and the reference
+        Assert.Equal([2], Order(selection));
+    }
+
+    [Fact]
+    public void SteppingTheReferenceGoesThroughTheShownImages()
+    {
+        CompareSelection selection = Of(4);
+        selection.SetShown(2, false);
+        Assert.True(selection.StepReference(1));
+        Assert.Equal(1, selection.Reference);
+        Assert.True(selection.StepReference(1));
+        Assert.Equal(3, selection.Reference); // past the one taken out
+        Assert.True(selection.StepReference(1));
+        Assert.Equal(0, selection.Reference); // round the end
+        Assert.True(selection.StepReference(-1));
+        Assert.Equal(3, selection.Reference);
+    }
+
+    [Fact]
+    public void WithTwoImagesMakingTheOtherTheReferenceSwapsThem()
+    {
+        CompareSelection selection = Of(2);
+        Assert.Equal([0, 1], Order(selection));
+        Assert.True(selection.Moves(1));
+        Assert.True(selection.StepReference(1));
+        Assert.Equal([1, 0], Order(selection));
+        Assert.Equal((true, false), (selection.Moves(0), selection.Moves(1))); // and what is aligned is the other one
+        Assert.True(selection.StepReference(1));
+        Assert.Equal([0, 1], Order(selection));
+    }
+
+    [Fact]
+    public void WithOnlyTheReferenceShownThereIsNoOtherToStepTo()
+    {
+        CompareSelection selection = Of(3);
+        selection.SetShown(1, false);
+        selection.SetShown(2, false);
+        Assert.False(selection.StepReference(1));
+        Assert.Equal(0, selection.Reference);
+    }
+
+    [Fact]
+    public void TheReferenceIsNeverMoved()
+    {
+        CompareSelection selection = Of(3);
+        Assert.False(selection.SetMoves(0, true));
+        Assert.False(selection.Moves(0));
+        Assert.True(selection.SetMoves(2, false));
+        Assert.False(selection.Moves(2));
+        selection.SetReference(1);
+        Assert.Equal((true, false, false), (selection.Moves(0), selection.Moves(1), selection.Moves(2))); // its tick is kept for when it is not the reference
+        selection.SetReference(0);
+        Assert.True(selection.Moves(1));
+    }
+
+    [Fact]
+    public void RemovingAnImageClosesTheGapInWhatIsShownAndMoved()
+    {
+        CompareSelection selection = Of(5);
+        selection.SetShown(3, false);
+        selection.SetMoves(4, false);
+        selection.SetReference(2);
+        selection.Removed(1);
+        Assert.Equal(4, selection.Count);
+        Assert.Equal(1, selection.Reference); // it moved up with the images after the removed one
+        Assert.Equal([true, true, false, true], Enumerable.Range(0, 4).Select(selection.IsShown));
+        Assert.Equal([true, false, true, false], Enumerable.Range(0, 4).Select(selection.Moves));
+    }
+
+    [Fact]
+    public void RemovingTheReferenceMakesItsSuccessorTheReferenceAndShowsIt()
+    {
+        CompareSelection selection = Of(4);
+        selection.SetShown(2, false);
+        selection.SetReference(1);
+        selection.Removed(1);
+        Assert.Equal(1, selection.Reference); // what was image 2 is image 1 now
+        Assert.True(selection.IsShown(1));
+        selection.Removed(2);
+        selection.Removed(1);
+        Assert.Equal((1, 0), (selection.Count, selection.Reference));
+    }
+
+    [Fact]
+    public void AnAddedImageIsShownAndMoved()
+    {
+        CompareSelection selection = Of(2);
+        selection.Added();
+        Assert.True(selection.IsShown(2));
+        Assert.True(selection.Moves(2));
+        Assert.Equal([0, 1, 2], Order(selection));
     }
 
     [Fact]
@@ -161,19 +401,10 @@ public class CompareSelectionTests
         for (int i = 0; i < 5; i++)
         {
             Assert.True(selection.Toggle());
-            Assert.Equal((0, 1), selection.Pair);
+            Assert.Equal([0, 1], Order(selection));
         }
         Assert.Equal(1, selection.Active);
-    }
-
-    [Fact]
-    public void SwappingReversesThePair()
-    {
-        CompareSelection selection = Of(3);
-        selection.Select(2);
-        Assert.Equal((0, 2), selection.Pair);
-        selection.Swapped = true;
-        Assert.Equal((2, 0), selection.Pair);
+        Assert.Equal(0, selection.Reference);
     }
 
     [Fact]

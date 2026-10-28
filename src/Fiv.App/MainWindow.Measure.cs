@@ -41,6 +41,9 @@ internal sealed unsafe partial class MainWindow
     readonly List<MeasureShape> _shapes = [];
     int _selectedShape = -1;
     MeasureKind? _measureArmed;           // the next drag on the image draws one of these
+    bool _threePoints;                    // the circle asked for is drawn through three points, clicked one after the other
+    readonly List<(double X, double Y)> _circlePoints = []; // those clicked so far
+    bool _placingPoint;                   // the button is down on a point just clicked: a drag moves it
 
     bool _dragMeasure;                    // the drag under way draws or changes a measurement
     bool _drawingShape, _measureConstrain;
@@ -149,18 +152,29 @@ internal sealed unsafe partial class MainWindow
         if (on) EndSurface(); // the shapes are drawn on the flat image
         _measure = on;
         _measureArmed = null;
+        _threePoints = _placingPoint = false;
+        _circlePoints.Clear();
         _dragMeasure = _drawingShape = false;
-        if (on && _shapes.Count == 0) Notice("Measuring: L for a line, R for a rectangle, C for a circle, then drag on the image.");
+        if (on && _shapes.Count == 0) Notice("Measuring: L for a line, R for a rectangle, C for a circle, then drag on the image; Shift+C, then three clicks: a circle through them.");
     }
 
-    /// <summary>Makes the next drag on the image draw a shape of this kind; asked for again, takes that back.</summary>
-    void ArmMeasure(MeasureKind kind)
+    /// <summary>
+    /// Makes the next drag on the image draw a shape of this kind, or with <paramref name="threePoints"/>
+    /// the next three clicks a circle through them; asked for again, takes that back.
+    /// </summary>
+    void ArmMeasure(MeasureKind kind, bool threePoints = false)
     {
         _measure = true;
-        _measureArmed = _measureArmed == kind ? null : kind;
+        bool again = _measureArmed == kind && _threePoints == threePoints;
+        _measureArmed = again ? null : kind;
+        _threePoints = !again && threePoints;
+        _circlePoints.Clear();
         // A drag can only draw one thing: not the numbers' region or the alignment's as well.
         if (_measureArmed != null) _regionArmed = _alignRegionArmed = false;
     }
+
+    /// <summary>True while the clicks on the image are the points of a circle.</summary>
+    bool PlacingPoints => _measure && _measureArmed == MeasureKind.Circle && _threePoints;
 
     void RemoveShape(int index)
     {
@@ -178,7 +192,13 @@ internal sealed unsafe partial class MainWindow
     /// <summary>The keys of measuring. True if the key was one of them.</summary>
     bool MeasureKey(VIRTUAL_KEY key, bool shift, bool control)
     {
-        if (control || shift) return false;
+        if (control) return false;
+        if (shift)
+        {
+            if (!_measure || key != VIRTUAL_KEY.VK_C) return false;
+            ArmMeasure(MeasureKind.Circle, threePoints: true);
+            return true;
+        }
         if (key == VIRTUAL_KEY.VK_U)
         {
             SetMeasure(!_measure);
@@ -202,7 +222,9 @@ internal sealed unsafe partial class MainWindow
                 else Notice("No measurement is selected. (To delete the file, close the measurements first: U.)");
                 return true;
             case VIRTUAL_KEY.VK_ESCAPE when !_showKeys && !_showSettings && !_showFileTypes:
-                if (_measureArmed != null) _measureArmed = null;
+                // The points of a circle clicked so far, then the shape chosen, then the measurements.
+                if (_circlePoints.Count > 0 && !_placingPoint) _circlePoints.Clear();
+                else if (_measureArmed != null) _measureArmed = null;
                 else SetMeasure(false);
                 return true;
         }
@@ -218,6 +240,15 @@ internal sealed unsafe partial class MainWindow
     {
         if (!_measure) return false;
         if (!TryGetGridAt(x, y, out Affine2 toScreen, out int item) || !TryGetGridSize(out double width, out double height)) return false;
+        if (PlacingPoints)
+        {
+            // A point of the circle's outline, where the button goes down; a drag moves it until the button comes up.
+            (double gx, double gy) = GridPoint(toScreen, x, y, toCentres: true);
+            _circlePoints.Add((Math.Clamp(gx, 0, width), Math.Clamp(gy, 0, height)));
+            _placingPoint = _dragMeasure = true;
+            _measureDragItem = item;
+            return true;
+        }
         if (_measureArmed is { } kind)
         {
             (_measureGrabX, _measureGrabY) = GridPoint(toScreen, x, y, toCentres: kind != MeasureKind.Rectangle);
@@ -243,6 +274,13 @@ internal sealed unsafe partial class MainWindow
 
     void MeasureDrag(int x, int y)
     {
+        if (_dragMeasure && _placingPoint)
+        {
+            if (_circlePoints.Count == 0 || !TryGetDragGrid(out Affine2 grid) || !TryGetGridSize(out double gridWidth, out double gridHeight)) return;
+            (double px, double py) = GridPoint(grid, x, y, toCentres: true);
+            _circlePoints[^1] = (Math.Clamp(px, 0, gridWidth), Math.Clamp(py, 0, gridHeight));
+            return;
+        }
         if (!_dragMeasure || _selectedShape < 0 || _selectedShape >= _shapes.Count) return;
         if (!TryGetDragGrid(out Affine2 toScreen) || !TryGetGridSize(out double width, out double height)) return;
         MeasureKind kind = _shapes[_selectedShape].Kind;
@@ -256,6 +294,12 @@ internal sealed unsafe partial class MainWindow
     {
         if (!_dragMeasure) return;
         _dragMeasure = false;
+        if (_placingPoint)
+        {
+            _placingPoint = false;
+            PlacedPoint();
+            return;
+        }
         if (!_drawingShape) return;
         _drawingShape = false;
         // Smaller than three screen pixels: a click, not a shape. The tool stays ready for the drag that was meant.
@@ -267,6 +311,36 @@ internal sealed unsafe partial class MainWindow
             return;
         }
         _measureArmed = null;
+    }
+
+    /// <summary>
+    /// A point of a circle was put down. One within three screen pixels of a point before it was
+    /// a click too many, and goes; the third makes the circle, unless the three lie on a line.
+    /// </summary>
+    void PlacedPoint()
+    {
+        if (_circlePoints.Count == 0) return;
+        double zoom = TryGetDragGrid(out Affine2 toScreen) ? toScreen.A : 1;
+        (double x, double y) = _circlePoints[^1];
+        for (int i = 0; i < _circlePoints.Count - 1; i++)
+        {
+            if (Math.Sqrt((x - _circlePoints[i].X) * (x - _circlePoints[i].X) + (y - _circlePoints[i].Y) * (y - _circlePoints[i].Y)) * zoom >= 3 * _dpiScale) continue;
+            _circlePoints.RemoveAt(_circlePoints.Count - 1);
+            return;
+        }
+        if (_circlePoints.Count < 3) return;
+        ((double x1, double y1), (double x2, double y2), (double x3, double y3)) = (_circlePoints[0], _circlePoints[1], _circlePoints[2]);
+        if (MeasureShape.CircleThrough(x1, y1, x2, y2, x3, y3) is not { } circle)
+        {
+            _circlePoints.RemoveAt(2);
+            Notice("The three points lie on a line: no circle passes through them. Click the third one somewhere else.");
+            return;
+        }
+        _shapes.Add(circle);
+        _selectedShape = _shapes.Count - 1;
+        _circlePoints.Clear();
+        _measureArmed = null;
+        _threePoints = false;
     }
 
     // ---------------------------------------------------------------- what the numbers are of
@@ -446,7 +520,7 @@ internal sealed unsafe partial class MainWindow
             overImage = true;
             if (_measureArmed == null) hover = HitShape(under, _mouseX, _mouseY, out hoverHandle);
         }
-        if (_shapes.Count > 0)
+        if (_shapes.Count > 0 || _circlePoints.Count > 0)
         {
             ImDrawListPtr draw = ImGui.GetBackgroundDrawList();
             if (Comparing)
@@ -582,6 +656,55 @@ internal sealed unsafe partial class MainWindow
             draw.AddCircle(at, 6 * scale, ColorOutline, 0, 4 * scale);
             draw.AddCircle(at, 6 * scale, ColorRegion, 0, 2 * scale);
         }
+
+        DrawCirclePoints(draw, m, scale);
+    }
+
+    /// <summary>
+    /// The points of a circle clicked so far, and the circle the next click would make: through
+    /// the two points and the mouse, or from the one point a line to it.
+    /// </summary>
+    void DrawCirclePoints(ImDrawListPtr draw, in Affine2 toScreen, float scale)
+    {
+        if (_circlePoints.Count == 0) return;
+        Affine2 m = toScreen;
+        Vector2 Screen(double x, double y)
+        {
+            (double sx, double sy) = m.Apply(x, y);
+            return new Vector2((float)sx, (float)sy);
+        }
+
+        // Where the mouse is on the grid, if it is over the image, and no point is being dragged: the next point would be there.
+        bool mouse = false;
+        double mx = 0, my = 0;
+        if (!_placingPoint && TryGetGridAt(_mouseX, _mouseY, out Affine2 under, out _))
+        {
+            mouse = true;
+            (mx, my) = GridPoint(under, _mouseX, _mouseY, toCentres: true);
+        }
+        float thickness = 1.5f * scale;
+        if (_circlePoints.Count == 1 && mouse)
+        {
+            Vector2 from = Screen(_circlePoints[0].X, _circlePoints[0].Y), to = Screen(mx, my);
+            draw.AddLine(from, to, ColorOutline, thickness + 2 * scale);
+            draw.AddLine(from, to, ColorMeasure, thickness);
+        }
+        else if (_circlePoints.Count == 2 && mouse &&
+                 MeasureShape.CircleThrough(_circlePoints[0].X, _circlePoints[0].Y, _circlePoints[1].X, _circlePoints[1].Y, mx, my) is { } circle)
+        {
+            Vector2 centre = Screen(circle.X0, circle.Y0);
+            float radius = (float)(circle.Radius * m.A);
+            draw.AddCircle(centre, radius, ColorOutline, 0, thickness + 2 * scale);
+            draw.AddCircle(centre, radius, ColorMeasure, 0, thickness);
+        }
+        foreach ((double x, double y) in _circlePoints)
+        {
+            Vector2 at = Screen(x, y);
+            at = new Vector2(MathF.Round(at.X), MathF.Round(at.Y));
+            var size = new Vector2(4, 4) * scale;
+            draw.AddRectFilled(at - size - Vector2.One, at + size + Vector2.One, ColorOutline);
+            draw.AddRectFilled(at - size, at + size, ColorMeasureSelected);
+        }
     }
 
     /// <summary>Writes "2   123.4 px" (or "1.54 mm", "200 x 100", "Ø 80.2") for a measurement into the shared buffer, null-terminated.</summary>
@@ -716,6 +839,8 @@ internal sealed unsafe partial class MainWindow
         ToolButton("Rectangle (R)"u8, MeasureKind.Rectangle);
         Flow(ButtonWidth("Circle (C)"u8));
         ToolButton("Circle (C)"u8, MeasureKind.Circle);
+        Flow(ButtonWidth("Circle, 3 points (Shift+C)"u8));
+        ToolButton("Circle, 3 points (Shift+C)"u8, MeasureKind.Circle, threePoints: true);
         Flow(ButtonWidth("Delete (Del)"u8) + space + ButtonWidth("Clear all"u8));
         ImGui.BeginDisabled(_selectedShape < 0);
         if (ImGui.Button("Delete (Del)"u8)) RemoveShape(_selectedShape);
@@ -724,7 +849,18 @@ internal sealed unsafe partial class MainWindow
         ImGui.BeginDisabled(_shapes.Count == 0);
         if (ImGui.Button("Clear all"u8)) ClearShapes();
         ImGui.EndDisabled();
-        if (_measureArmed != null)
+        if (PlacingPoints)
+        {
+            ImGui.PushTextWrapPos(_panelWrap);
+            ImGui.TextUnformatted(_circlePoints.Count switch
+            {
+                0 => "Click three points of the circle's outline on the image."u8,
+                1 => "Click the second point. Esc starts over."u8,
+                _ => "Click the third point: the circle passes through all three. Esc starts over."u8,
+            });
+            ImGui.PopTextWrapPos();
+        }
+        else if (_measureArmed != null)
         {
             ImGui.PushTextWrapPos(_panelWrap);
             ImGui.TextUnformatted("Drag on the image. With Shift: a level, upright or diagonal line; a square."u8);
@@ -774,11 +910,11 @@ internal sealed unsafe partial class MainWindow
         ImGui.End();
         if (_profileHover != hoverBefore) Invalidate(); // the mark on the image follows the mouse in the plot
 
-        void ToolButton(ReadOnlySpan<byte> label, MeasureKind kind)
+        void ToolButton(ReadOnlySpan<byte> label, MeasureKind kind, bool threePoints = false)
         {
-            bool armed = _measureArmed == kind;
+            bool armed = _measureArmed == kind && _threePoints == threePoints;
             if (armed) ImGui.PushStyleColor(ImGuiCol.Button, on);
-            if (ImGui.Button(label)) ArmMeasure(kind);
+            if (ImGui.Button(label)) ArmMeasure(kind, threePoints);
             if (armed) ImGui.PopStyleColor();
         }
     }
@@ -913,7 +1049,12 @@ internal sealed unsafe partial class MainWindow
                 ImGui.TextUnformatted("radius"u8);
                 ImGui.SameLine();
                 edited |= ImGui.InputDouble("##r"u8, ref radius, 1, 10, "%.2f"u8);
-                if (edited && double.IsFinite(x0 + y0 + radius)) _shapes[_selectedShape] = MeasureShape.Circle(x0, y0, Math.Max(0.5, radius)).Within(width, height);
+                if (edited && double.IsFinite(x0 + y0 + radius))
+                {
+                    // A centre typed is kept on the grid; one off it (of a circle through three points) stays where it is while the radius is typed.
+                    MeasureShape circle = MeasureShape.Circle(x0, y0, Math.Max(0.5, radius));
+                    _shapes[_selectedShape] = x0 != shape.X0 || y0 != shape.Y0 ? circle.Within(width, height) : circle;
+                }
                 break;
             }
         }

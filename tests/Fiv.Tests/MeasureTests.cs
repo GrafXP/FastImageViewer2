@@ -233,6 +233,50 @@ public class MeasureShapeTests
     }
 
     [Fact]
+    public void ACircleThroughThreePointsPassesThroughAllThree()
+    {
+        MeasureShape circle = MeasureShape.CircleThrough(150, 100, 100, 150, 50, 100)!.Value;
+        Assert.Equal((100, 100, 50), (circle.X0, circle.Y0, circle.Radius), new ShapeNumbers(1e-9));
+        // Any three points of a circle, in any order and however close together, give it back.
+        foreach ((double a, double b, double c) in new[] { (0.1, 2.0, 4.5), (3.0, 1.0, 2.0), (1.0, 1.01, 1.02) })
+        {
+            (double x1, double y1) = (431.5 + 87.25 * Math.Cos(a), 212.25 + 87.25 * Math.Sin(a));
+            (double x2, double y2) = (431.5 + 87.25 * Math.Cos(b), 212.25 + 87.25 * Math.Sin(b));
+            (double x3, double y3) = (431.5 + 87.25 * Math.Cos(c), 212.25 + 87.25 * Math.Sin(c));
+            MeasureShape found = MeasureShape.CircleThrough(x1, y1, x2, y2, x3, y3)!.Value;
+            Assert.Equal((431.5, 212.25, 87.25), (found.X0, found.Y0, found.Radius), new ShapeNumbers(1e-6));
+        }
+    }
+
+    [Fact]
+    public void ThreePointsOnALineOrInOnePlaceMakeNoCircle()
+    {
+        Assert.Null(MeasureShape.CircleThrough(0, 0, 10, 10, 25, 25));
+        Assert.Null(MeasureShape.CircleThrough(5, 5, 5, 5, 20, 7));
+        Assert.Null(MeasureShape.CircleThrough(0, 0, 1000, 0.0000001, 2000, 0));
+    }
+
+    [Fact]
+    public void ACircleWhoseCentreIsOffTheGridMovesWithoutJumpingOntoIt()
+    {
+        // An arc at the left edge of a picture: its centre lies left of it.
+        MeasureShape circle = MeasureShape.CircleThrough(5, 0, 5, 100, 30, 50)!.Value;
+        Assert.True(circle.X0 < 0);
+        MeasureShape moved = circle.Dragged(MeasureHandle.Body, 0, 0, 10, 4, false, 200, 200);
+        Assert.Equal((circle.X0 + 10, circle.Y0 + 4), (moved.X0, moved.Y0)); // back towards the grid, by as much as the mouse went
+        moved = circle.Dragged(MeasureHandle.Body, 0, 0, -10, 4, false, 200, 200);
+        Assert.Equal((circle.X0, circle.Y0 + 4), (moved.X0, moved.Y0));     // no further off it, but along it
+    }
+
+    sealed class ShapeNumbers(double tolerance) : IEqualityComparer<(double, double, double)>
+    {
+        public bool Equals((double, double, double) a, (double, double, double) b) =>
+            Math.Abs(a.Item1 - b.Item1) <= tolerance && Math.Abs(a.Item2 - b.Item2) <= tolerance && Math.Abs(a.Item3 - b.Item3) <= tolerance;
+
+        public int GetHashCode((double, double, double) value) => 0;
+    }
+
+    [Fact]
     public void DraggingACircleByItsOutlineChangesItsRadius()
     {
         MeasureShape circle = MeasureShape.Circle(200, 200, 50);

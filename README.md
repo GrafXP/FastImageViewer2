@@ -43,32 +43,47 @@ channel are kept: as 16-bit values (10 and 12 bits spread over the full range), 
 grey. A raw shows the JPEG its camera embedded at once, and its own pixels a second or two later.
 
 Two to sixteen files opened together, dropped on the window, or selected in a panel are
-compared: side by side, in a grid, one at a time in the same place, or two of
-them in one pane, split by a divider, blended, or as a checkerboard. Zoom, position and the
-display controls are the same for all of them, and each pane shows the position and values of
-its own pixel under the cursor.
+compared: one at a time in the same place, side by side, in a grid, or all of them in one pane:
+each in a strip of its own between dividers, laid over each other with an opacity each, or
+taking turns in the cells of a checkerboard. The overlay lays all of them together, each with a
+transparency of its own and in no order: each counts by its opacity (all at 100 % are an equal
+mix, at 0 % an image is not there), and together they cover the background as much as layers of
+those opacities would, so that one image at 50 % is half see-through. The blend instead lays the
+images over the reference one after the other. Zoom, position and the display controls are the
+same for all of them, and each pane shows the position and values of its own pixel under the
+cursor. The compare panel lists the images of the set: a tick takes an image out of the views
+that show several or puts it back (also `Ctrl+1` ... `9`), and one of them is the reference,
+which the views begin with and the others are compared with and aligned to (`X` makes the next
+one the reference; of two, that swaps them).
 
-What two images differ by is shown as a picture and as numbers. The difference view colours
-every pixel by the difference (absolute, signed, squared, or relative to the first image) with a
-gain and a colour bar in the units of the files, or marks the pixels that differ by more than a
-threshold; the SSIM view is a heat map of structural similarity. The metrics panel gives MAE,
-MSE, PSNR, the largest error, the share of pixels over the threshold and SSIM for every channel,
-with a histogram of the differences, for the whole image or a region dragged on it. The numbers
-are computed from the full-resolution pixels as the files have them, not from the screen. Zoomed
-in far enough, the values of both images and their difference are written into each pixel. The
-view at full resolution, the difference values and the numbers can be saved.
+What images differ by is shown as pictures and as numbers: for every image shown, against the
+reference, in a pane each. The difference view colours every pixel by the difference (absolute,
+signed, squared, or relative to the reference) with a gain and a colour bar in the units of the
+files, or marks the pixels that differ by more than a threshold; the SSIM view is a heat map of
+structural similarity. The metrics panel gives MAE, PSNR, the largest error, the share of pixels
+over the threshold and SSIM of every image against the reference, a row each, and of the one
+clicked MSE as well and all of it for every channel, with a histogram of the differences, for the
+whole image or a region dragged on it. The numbers are computed from the full-resolution pixels as
+the files have them, not from the screen, one image after the other. Zoomed in far enough, the
+values of both images and their difference are written into each pixel. The view at full
+resolution, the difference values and the numbers of all the images can be saved.
 
-Images that do not lie on each other can be aligned: the second image of the pair is moved,
-turned and scaled until it lies on the first. By hand, with `A`: drag it, turn it with a drag
-and `Shift` held, nudge it with the arrow keys, or type the numbers. Automatically, with `Shift+A`, from the pictures themselves (a
-24 MP pair in about a quarter of a second, to a few hundredths of a pixel); `Q` refines a pose
-set by hand. Both can be told to go by a region only: a rectangle dragged on the image, for
-when part of the picture has changed or moved on its own. Everything follows the alignment: the panes, the difference and the other
-two-image views, the pixel readouts, the numbers and the saved files. The aligned image itself
-can be saved, on the pixel grid of the image it was aligned to.
+Images that do not lie on each other can be aligned: the images ticked in the align panel, all
+but the reference to begin with, are moved, turned and scaled until they lie on the reference.
+By hand, with `A`: drag them, turn them with a drag and `Shift` held, nudge them with the arrow
+keys, or type the numbers of one of them. Automatically, with `Shift+A`, each one after the other,
+from the pictures themselves (a 24 MP pair in about a quarter of a second, to a few hundredths of
+a pixel); `Q` refines poses set by hand. Both can be told to go by a region only: a rectangle
+dragged on the image, for when part of the picture has changed or moved on its own. The panel
+lists every image with what it has been moved by and how alike it is to the reference as it
+lies. Everything follows the alignment: the panes, the difference and the other views that lay
+images over each other, the pixel readouts, the numbers and the saved files. An aligned image
+can be saved, on the pixel grid of the reference.
 
 An image can be measured, with `U`: lines, rectangles and circles are drawn on it with the
-mouse and listed in a panel. A line has its length, how far it goes across and down, and its
+mouse and listed in a panel; a circle from its centre out, or through three points of its
+outline clicked one after the other (for the edge of something round, whose centre may even lie
+off the picture). A line has its length, how far it goes across and down, and its
 direction; the panel plots the values of the image along it, and the mouse over the plot reads
 them at a point, which is marked on the image. A rectangle or a circle has its size and area,
 and of the pixels inside it the mean, spread, smallest, largest and median value and a
@@ -98,7 +113,7 @@ a drag; going to the next image keeps it where it is, and the next image rises i
 While comparing (`Shift+3` there, since `3` is the third image), every pane goes into 3D and one
 camera sees them all: side by side and in the grid, each image is raised by its own values, on
 the comparison's canvas with one height scale for all, so that heights can be compared as
-they are seen; its alignment and placement are kept. A view that combines two images is drawn
+they are seen; its alignment and placement are kept. A view that combines images is drawn
 flat over the whole canvas (at most 2048 pixels on the long side) and raised by what it shows:
 the difference by where it is on the colour scale, so that the gain sets the height and a signed
 difference stands about a middle plane; SSIM by the dissimilarity; split, blend and checkerboard
@@ -142,42 +157,43 @@ Comparing:
 | Drop 2 to 16 files | compare them; with `Ctrl` held, add what is dropped to the comparison |
 | Select 2 to 16 images in a panel, or open them from Explorer | compare them: two side by side, more in the grid; with one left selected, it is shown on its own |
 | Right click the selection in a panel | file actions for all the selected images (`Del`, `F2` and the image's own menu act on the active one) |
-| `M`, `Shift+M` | mode: single, side by side, grid, split, blend, checkerboard, difference, SSIM |
+| `M`, `Shift+M` | mode: single, side by side, grid, split, blend, overlay, checkerboard, difference, SSIM |
 | `1` … `9` | go to that image; held down, show it only until the key is released |
+| `Ctrl+1` … `9` | take that image out of the views that show several, or put it back (the reference stays) |
 | `Left` / `Right`, `Home` / `End` | previous / next, first / last image of the set |
-| `X` | swap the two images of the split, blend and checkerboard |
+| `X`, `Shift+X` | the next / previous image in the views becomes the reference; of two, they swap |
 | `K` | blink between the last two images |
-| `Up` / `Down` | move the divider, change the opacity, the cell size, the blink rate or the gain (`Shift`: finer) |
+| `Up` / `Down` | move a divider (the one after the active image's strip), change the active image's opacity in the blend or the overlay, the cell size, the blink rate or the gain (`Shift`: finer) |
 | `L` | one zoom and position for all panes, or one each |
-| `P` | compare panel: all of the above, how different sizes are matched, labels |
-| Click a pane, drag the divider | make its image the active one; move the divider |
-| Right click | menu: mode, remove the image from the comparison, copy and save, stop |
+| `P` | compare panel: all of the above, how different sizes are matched, labels, and the images: which are in the views, which is the reference, each one's opacity in the blend and in the overlay |
+| Click a pane, drag a divider | make its image the active one; move the divider |
+| Right click | menu: mode, the images in the views, the reference, remove the image from the comparison, copy and save, stop |
 | `E`, `Shift+E` | difference view; in it: absolute, signed, squared, relative. `H` chooses the channel (colour: the one that differs most) |
 | `G`, `Shift+G` | colours of the difference and the similarity: grey, Viridis, Turbo, Jet, thermal, rainbow, cool-warm, red-blue, magenta-cyan |
 | `W` | mark the pixels that differ by more than the threshold, on the dimmed first image |
 | `,` / `.` | threshold down / up |
-| `N` | metrics panel |
+| `N` | metrics panel: a row for every image against the reference; click one for all its numbers |
 | `R`, `Shift+R` | drag a rectangle for the numbers to be taken over (also `Shift`+drag); the whole image again |
 | `Ctrl+C` | copy what the panes show (one image of the set: through the menu) |
-| `Ctrl+S` | save the split, blend, checkerboard, difference or SSIM view at full resolution (PNG) |
-| `Ctrl+D` | save the difference itself, second image less first, as 32-bit float TIFF |
-| `Ctrl+Shift+S` | save the numbers as CSV or JSON |
+| `Ctrl+S` | save the split, blend, overlay or checkerboard of all the images in the view (the overlay transparent as far as its images are), or the difference or SSIM view of the active image, at full resolution (PNG) |
+| `Ctrl+D` | save the difference itself, the active image less the reference, as 32-bit float TIFF |
+| `Ctrl+Shift+S` | save the numbers of every image against the reference as CSV or JSON |
 
-Aligning the second image of the pair to the first:
+Aligning images to the reference:
 
 | Input | Action |
 |---|---|
-| `A` | align mode: a panel with the image's position, turn and size as numbers, how alike the two images are as they lie, reset and undo; drags and the keys below move the image instead of the view |
-| `Shift+A` | align automatically: moved only, moved and turned, or moved, turned and scaled, as chosen in the panel. A result that does not make the two more alike is not taken over |
-| `Q` | fine align: refine the pose the image has (set by hand to within about a twentieth of the image) |
-| Drag, arrow keys | move the image; the keys by 1 pixel, with `Shift` by 0.1 |
-| `Shift`+drag | turn the image about its centre, by the angle the mouse goes round it: grab it far from the centre to turn finely |
-| `PgUp` / `PgDn`, `Shift`+wheel | turn it by 0.1 degrees; the keys with `Shift`, the wheel with `Ctrl` as well: by 0.01 |
-| `Home` / `End`, `Ctrl`+wheel | make it smaller / larger by 0.1 % (the keys with `Shift`: 0.01 %) |
+| `A` | align mode: a panel with every image, a tick for whether it is moved, what it has been moved by and how alike it is to the reference as it lies, the position, turn and size of the one clicked as numbers, reset and undo; drags and the keys below move the ticked images instead of the view |
+| `Shift+A` | align the ticked images automatically, one after the other: moved only, moved and turned, or moved, turned and scaled, as chosen in the panel. A result that does not make an image more alike to the reference is not taken over |
+| `Q` | fine align: refine the poses the images have (set by hand to within about a twentieth of the image) |
+| Drag, arrow keys | move the images; the keys by 1 pixel, with `Shift` by 0.1 |
+| `Shift`+drag | turn each image about its centre, by the angle the mouse goes round the active one's: grab far from the centre to turn finely |
+| `PgUp` / `PgDn`, `Shift`+wheel | turn them by 0.1 degrees; the keys with `Shift`, the wheel with `Ctrl` as well: by 0.01 |
+| `Home` / `End`, `Ctrl`+wheel | make them smaller / larger by 0.1 % (the keys with `Shift`: 0.01 %) |
 | "Region..." in the panel, then a drag | a rectangle for the automatic alignment to go by, instead of the whole of both images; "Whole image" takes it away |
-| `Backspace` | back to where it was before any aligning |
-| `Ctrl+E` | save the aligned image: PNG, or 32-bit float TIFF for float images; transparent where it has no pixel |
-| `A` or `Esc` | leave align mode; the image stays where it was put |
+| `Backspace` | back to where they were before any aligning |
+| `Ctrl+E` | save the aligned image of the one clicked: PNG, or 32-bit float TIFF for float images; transparent where it has no pixel |
+| `A` or `Esc` | leave align mode; the images stay where they were put |
 
 Measuring, on one image or while comparing:
 
@@ -185,6 +201,7 @@ Measuring, on one image or while comparing:
 |---|---|
 | `U` | the measurements and their panel, on or off; they are kept while they are off |
 | `L`, `R`, `C`, then a drag | draw a line, a rectangle, a circle from its centre. While the measurements are on, these three keys choose a shape instead of what they do otherwise |
+| `Shift+C`, then three clicks | a circle through the three points; a drag before letting go moves the point. `Esc` starts over; three points on a line make no circle |
 | `Shift`+drag | the line level, upright or diagonal; the rectangle a square |
 | Drag a handle | change a measurement: an end of a line, a corner or a side of a rectangle, the outline of a circle |
 | Drag a line, a rectangle's outline, a circle's centre | move it |
@@ -195,7 +212,7 @@ Measuring, on one image or while comparing:
 | Drag the panel's title bar, its edges or corner | move it, or dock it where the markers show; resize it. What is in it follows its width |
 | `H`, `Shift+H` | the channel the plot and the histogram show, as for the image |
 | `Del` | delete the selected measurement (while the measurements are on, `Del` does not delete the file) |
-| `Esc` | give up the shape chosen; again: put the measurements away |
+| `Esc` | give up the points of a circle clicked so far, then the shape chosen; again: put the measurements away |
 | "Scale" in the panel | what one pixel is long, and in which unit; or the known length of the selected line, from which that is worked out |
 | Buttons in the panel | save the list, the profile of the line, or the numbers and the histogram of the area, as CSV |
 
@@ -245,7 +262,7 @@ taken as one selection.
 
 Options: `--cache-mb <n>` and `--vram-mb <n>` set the budgets of the image cache (default 4096
 and 2048); `--no-prefetch` loads only the image asked for; `--new-instance` does not hand over
-to a running viewer; `--compare-mode <single|side|grid|split|blend|checker|diff|ssim>` starts a
+to a running viewer; `--compare-mode <single|side|grid|split|blend|overlay|checker|diff|ssim>` starts a
 comparison in that mode instead of the one used last. `--register <jpg,png,...|common|all>`
 does what "File types..." does, for exactly those endings and without a window, and
 `--unregister` takes it all back; the exit code is 0 if it was done.

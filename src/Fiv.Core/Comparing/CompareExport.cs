@@ -47,18 +47,21 @@ public struct DifferenceView
     public readonly float Floor => MathF.Max(FullScale, 1e-12f) / 255f;
 }
 
-/// <summary>How two images share one picture, besides their difference.</summary>
+/// <summary>How several images share one picture, besides their difference.</summary>
 public enum MixExport
 {
     SplitColumns,
     SplitRows,
     Blend,
     Checker,
+
+    /// <summary>Every image counting by its opacity, as <see cref="OverlayMix"/> has it.</summary>
+    Overlay,
 }
 
 /// <summary>
-/// What the two-image views show, computed on the CPU at the full resolution of the canvas, for
-/// saving to a file. The formulas are those of the shaders (display.hlsli, combine.hlsl); the
+/// What the views that lay images on each other show, computed on the CPU at the full resolution
+/// of the canvas, for saving to a file. The formulas are those of the shaders (display.hlsli, combine.hlsl); the
 /// results are BGRA with alpha 0 where there is nothing to show.
 /// </summary>
 public static unsafe class CompareExport
@@ -72,15 +75,18 @@ public static unsafe class CompareExport
     const int CheckerCell = 8;
     const float CheckerDark = 0.36f, CheckerLight = 0.48f;
 
-    delegate void RowWriter(int y, float* first, float* second, bool* hasFirst, bool* hasSecond, byte* output);
+    /// <summary>Writes a row of the result from a row of each source: source k's four planes from <c>values + 4 * width * k</c>, its flags from <c>has + width * k</c>.</summary>
+    delegate void RowWriter(int y, float* values, bool* has, byte* output);
 
     /// <summary>The difference view over the whole canvas.</summary>
     public static DecodedImage Difference(CompareSource first, CompareSource second, int canvasWidth, int canvasHeight, DifferenceView view, ToneSettings tone)
     {
         byte[] table = Colormaps.Table(view.Map);
         float scale = view.Scale, floor = view.Floor;
-        return Render(first, second, canvasWidth, canvasHeight, (y, a, b, hasA, hasB, output) =>
+        return Render([first, second], canvasWidth, canvasHeight, (y, values, has, output) =>
         {
+            float* a = values, b = values + 4 * canvasWidth;
+            bool* hasA = has, hasB = has + canvasWidth;
             for (int x = 0; x < canvasWidth; x++, output += 4)
             {
                 if (!hasA[x] || !hasB[x])
@@ -108,47 +114,83 @@ public static unsafe class CompareExport
     }
 
     /// <summary>
-    /// The split, blend or checkerboard view over the whole canvas. <paramref name="amount"/> is
-    /// the divider's canvas position, the opacity of the second image, or the cell size in
-    /// canvas pixels; the cells are centred on (<paramref name="originX"/>, <paramref name="originY"/>).
+    /// The split, blend or checkerboard view of two images over the whole canvas.
+    /// <paramref name="amount"/> is the divider's canvas position, the opacity of the second
+    /// image, or the cell size in canvas pixels; the cells are centred on (<paramref name="originX"/>, <paramref name="originY"/>).
     /// </summary>
     public static DecodedImage Mix(CompareSource first, CompareSource second, int canvasWidth, int canvasHeight, MixExport kind,
-        float amount, float originX, float originY, ToneSettings tone)
+        float amount, float originX, float originY, ToneSettings tone) => kind switch
     {
-        if (kind == MixExport.Checker) amount = MathF.Max(1, amount);
-        return Render(first, second, canvasWidth, canvasHeight, (y, a, b, hasA, hasB, output) =>
+        MixExport.Checker => Mix([first, second], canvasWidth, canvasHeight, kind, [], amount, originX, originY, tone),
+        MixExport.Blend => Mix([first, second], canvasWidth, canvasHeight, kind, [1, amount], 0, 0, 0, tone),
+        _ => Mix([first, second], canvasWidth, canvasHeight, kind, [amount], 0, 0, 0, tone),
+    };
+
+    /// <summary>
+    /// The split, blend or checkerboard view of several images over the whole canvas, as the
+    /// combine pass draws it. <paramref name="amounts"/> are, for a split, the canvas positions
+    /// of the dividers in increasing order, one fewer than there are images; for a blend, each
+    /// image's opacity over those before it (the first's is not used); for the overlay, each
+    /// image's own opacity, and what they cover together is the result's alpha. The checkerboard's cells
+    /// are <paramref name="cellSize"/> canvas pixels, centred on (<paramref name="originX"/>, <paramref name="originY"/>),
+    /// and go round the images as <see cref="CompareGeometry.CheckerLayer"/> has it.
+    /// </summary>
+    public static DecodedImage Mix(IReadOnlyList<CompareSource> layers, int canvasWidth, int canvasHeight, MixExport kind,
+        float[] amounts, float cellSize, float originX, float originY, ToneSettings tone)
+    {
+        int count = layers.Count;
+        cellSize = MathF.Max(1, cellSize);
+        return Render(layers, canvasWidth, canvasHeight, (y, values, has, output) =>
         {
             for (int x = 0; x < canvasWidth; x++, output += 4)
             {
-                bool useSecond;
-                float opacity = 0;
-                switch (kind)
+                if (kind == MixExport.Overlay)
                 {
-                    case MixExport.SplitColumns:
-                        useSecond = x + 0.5f >= amount;
-                        break;
-                    case MixExport.SplitRows:
-                        useSecond = y + 0.5f >= amount;
-                        break;
-                    case MixExport.Checker:
-                        useSecond = ((long)MathF.Floor((x + 0.5f - originX) / amount) + (long)MathF.Floor((y + 0.5f - originY) / amount) & 1) != 0;
-                        break;
-                    default:
-                        // The second image lies over the first: where it has no pixels, the first is seen in full.
-                        useSecond = false;
-                        opacity = hasB[x] ? hasA[x] ? amount : 1 : 0;
-                        break;
-                }
-                if (kind != MixExport.Blend) opacity = useSecond ? 1 : 0;
-                bool needA = opacity < 1, needB = opacity > 0;
-                if ((needA && !hasA[x] && !needB) || (needB && !hasB[x] && !needA) || (!hasA[x] && !hasB[x]))
-                {
-                    *(uint*)output = 0;
+                    // Each image counts by its opacity; together they cover as much as layers of those opacities would.
+                    Vector3 sum = default;
+                    float weight = 0, through = 1;
+                    for (int k = 0; k < count; k++)
+                    {
+                        float opacity = Math.Clamp(amounts[k], 0f, 1f);
+                        if (opacity <= 0 || !has[k * canvasWidth + x]) continue;
+                        sum += opacity * Shade(Pixel(values + 4 * canvasWidth * k, x, canvasWidth), x, y, tone);
+                        weight += opacity;
+                        through *= 1 - opacity;
+                    }
+                    if (weight > 0) Store(output, sum / weight, (byte)((1 - through) * 255 + 0.5f));
+                    else *(uint*)output = 0;
                     continue;
                 }
-                Vector3 colorA = hasA[x] ? Shade(Pixel(a, x, canvasWidth), x, y, tone) : default;
-                Vector3 colorB = hasB[x] ? Shade(Pixel(b, x, canvasWidth), x, y, tone) : default;
-                Store(output, Vector3.Lerp(colorA, colorB, opacity), 255);
+                if (kind == MixExport.Blend)
+                {
+                    // Each image lies over those before it: where it has no pixels, they are seen as they are.
+                    Vector3 color = default;
+                    bool any = false;
+                    for (int k = 0; k < count; k++)
+                    {
+                        if (!has[k * canvasWidth + x]) continue;
+                        Vector3 shown = Shade(Pixel(values + 4 * canvasWidth * k, x, canvasWidth), x, y, tone);
+                        color = any ? Vector3.Lerp(color, shown, amounts[k]) : shown;
+                        any = true;
+                    }
+                    if (any) Store(output, color, 255);
+                    else *(uint*)output = 0;
+                    continue;
+                }
+
+                // One image of them at each pixel: by the strip it is in, or by the cell.
+                int layer = 0;
+                if (kind == MixExport.Checker)
+                {
+                    layer = CompareGeometry.CheckerLayer((long)MathF.Floor((x + 0.5f - originX) / cellSize), (long)MathF.Floor((y + 0.5f - originY) / cellSize), count);
+                }
+                else
+                {
+                    float at = kind == MixExport.SplitRows ? y + 0.5f : x + 0.5f;
+                    while (layer < count - 1 && at >= amounts[layer]) layer++;
+                }
+                if (has[layer * canvasWidth + x]) Store(output, Shade(Pixel(values + 4 * canvasWidth * layer, x, canvasWidth), x, y, tone), 255);
+                else *(uint*)output = 0;
             }
         });
     }
@@ -278,19 +320,20 @@ public static unsafe class CompareExport
         static ushort Whole16(float value) => (ushort)(Math.Clamp(value, 0f, 65535f) + 0.5f);
     }
 
-    /// <summary>Row by row over the canvas: both images in the units the GPU samples, and which pixels each has.</summary>
-    static DecodedImage Render(CompareSource first, CompareSource second, int width, int height, RowWriter write)
+    /// <summary>Row by row over the canvas: every source in the units the GPU samples, and which pixels each has.</summary>
+    static DecodedImage Render(IReadOnlyList<CompareSource> sources, int width, int height, RowWriter write)
     {
         var result = new DecodedImage(width, height, PixelLayout.Bgra8, width, height);
-        float scaleFirst = 1f / first.FullValue, scaleSecond = 1f / second.FullValue;
-        Parallel.For(0, height, () => (Values: new float[width * 8], Has: new bool[width * 2]), (y, _, buffers) =>
+        int count = sources.Count;
+        float[] scales = new float[count];
+        for (int k = 0; k < count; k++) scales[k] = 1f / sources[k].FullValue;
+        Parallel.For(0, height, () => (Values: new float[width * 4 * count], Has: new bool[width * count]), (y, _, buffers) =>
         {
             fixed (float* values = buffers.Values)
             fixed (bool* has = buffers.Has)
             {
-                Read(first, y, width, values, has, scaleFirst);
-                Read(second, y, width, values + 4 * width, has + width, scaleSecond);
-                write(y, values, values + 4 * width, has, has + width, result.Pixels + (long)y * result.Stride);
+                for (int k = 0; k < count; k++) Read(sources[k], y, width, values + 4 * width * k, has + width * k, scales[k]);
+                write(y, values, has, result.Pixels + (long)y * result.Stride);
             }
             return buffers;
         }, _ => { });

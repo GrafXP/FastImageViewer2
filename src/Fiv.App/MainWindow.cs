@@ -1405,7 +1405,7 @@ internal sealed unsafe partial class MainWindow
     void OnLeftUp()
     {
         _panning = false;
-        _dragDivider = false;
+        _dragDivider = -1;
         _dragAlign = false;
         EndMeasureDrag();
         EndRegion();
@@ -1775,7 +1775,12 @@ internal sealed unsafe partial class MainWindow
                 OnLeftUp();
                 return default;
             case PInvoke.WM_LBUTTONDBLCLK:
-                if (_surface)
+                if (PlacingPoints)
+                {
+                    // The points of a circle are clicked one after the other, as fast as one likes.
+                    OnLeftDown(LowWord(lParam.Value), HighWord(lParam.Value), shift: (wParam.Value & 0x0004) != 0);
+                }
+                else if (_surface)
                 {
                     ResetSurfaceCamera();
                     Invalidate();

@@ -791,6 +791,36 @@ mipmapped filtering when zoomed out, optional bicubic.
   worker with the full-resolution pixels; the reduced sizes are kept per image while it is in
   the set (32 MB for 24 MP).
 
+**As built after the 3D height map: every image at once.**
+
+- **The pair gave way to the images shown and a reference** (`CompareSelection`). Every image
+  of the set is in the views unless taken out, and one is the reference; the views take the
+  images shown beginning with it and going on round the set. With two images and the first as
+  the reference this is the pair as it was, and making the other the reference is the old swap.
+- **Split, blend and checkerboard take any number of images through one target**, a pass each:
+  a pass draws its image's strip or its cells and discards the rest, or for the blend is laid
+  over what the passes before it drew by its opacity, which the blend unit applies through the
+  blend factor (to the 3D canvas's heights as well, where 32-bit float targets blend). The video
+  memory is that of one float target whatever the number of images; the difference and the
+  similarity, which read two, make the second one only when they are used. The checkerboard's
+  cells go round the images so that no two neighbours, also across a corner from four images
+  on, show the same one (`CompareGeometry.CheckerLayer`, the shader and the saved file alike).
+- **Difference and SSIM are a pane for each image against the reference**, laid out as the grid
+  is. The numbers and the similarity maps are kept per pair and made one pair at a time (each
+  uses all cores), the active image's first; those of pairs no longer shown are let go of.
+- **The overlay is the blend's passes with other opacities.** Each image has an opacity of its
+  own, and the overlay is meant to be the same in any order: each image counts by its opacity
+  (sum of a_k c_k over the sum of a_k), and together they cover what is behind them as layers of
+  those opacities would, 1 - (1 - a_1)(1 - a_2)... Drawn as layer over layer, the pass of image k
+  needs the opacity a_k P / (S - P A_k), where S is the sum of the opacities, P what they cover
+  and A_k the sum of those above it (`OverlayMix.PassOpacities`); the first pass lies over the
+  backdrop by its own opacity, which the shader does, the others are the blend unit's. Exact
+  where every image has a pixel; the saved file is worked out pixel by pixel from the images
+  there, with what they cover as its alpha.
+- **Aligning moves the ticked images onto the reference**: drags and keys change all of their
+  poses as one change, which one undo takes back; the automatic alignment goes through them
+  one after the other, each taken over or not on its own, as for one image before.
+
 ## 8. Feature inventory of FastImageViewer → where it lands
 
 | Old feature | In FastImageViewer2 |
@@ -1599,6 +1629,57 @@ graphics card without mip levels made for float textures (asked for, then left w
 - The divider and the regions cannot be dragged in 3D (the keys still move the divider).
 - No export of the surface as a mesh (STL, OBJ) or of the heights as an image.
 - Transparent pixels show the background colour, not the checkerboard.
+
+**Every image at once: the compare modes, their controls and aligning; circles through three points**
+
+*State 2026-10-28: built, unit-tested, looked at in the viewer with four images of the compare
+corpus. Asked for as "the compare mode needs to work not only for two images but for n, and we
+need controls for all compare modes for all selected images, also the align mode has to work for
+all images (we can select which ones to move)" and "the measurement circle drawing needs 3 point
+mode". Design in section 7.*
+
+- Then asked for: "all images in one overlay with selectable transparency per image", the
+  blend with its reference kept as it is. The overlay mode: every image in the views with an
+  opacity of its own, 100 % to begin with, in a column of the compare panel and on its label;
+  `Up` / `Down` change the active image's. Looked at with four images, all at 100 % and one at 30 %.
+- The compare panel lists the images: in the views or not (`Ctrl+1` ... `9`), the reference
+  (`X` steps through the images shown), and in the blend each one's opacity (an equal mix until
+  one is set). Side by side is one row or one column of all the images shown, the grid as many
+  rows and columns as show them largest; split has a divider between every two strips, each
+  dragged on its own (`Up` / `Down` move the one after the active image's strip).
+- The metrics panel has a row for every image against the reference, of the channel shown, and
+  the clicked one in full; `Ctrl+Shift+S` saves the numbers of all of them in one CSV table or a
+  JSON array. `Ctrl+S` saves the split, blend or checkerboard of all, or the difference or SSIM
+  of the active image; `Ctrl+D` the active image's difference values.
+- The align panel lists every image but the reference: a tick for whether it moves, what it has
+  been moved by, how alike it is to the reference as it lies (worked out one image at a time
+  while the panel is open), and what its last automatic alignment said; the numbers below are
+  the clicked image's. Changing the reference stops an automatic alignment under way.
+- Measuring: `Shift+C`, then three clicks, is the circle through them (`MeasureShape.CircleThrough`);
+  a drag before letting go moves the point, a click on a point already there is dropped, three on
+  a line are refused. Its centre may lie off the picture, and stays there when the circle is moved
+  or its radius typed. Two quick clicks are two points, not a double click.
+- Looked at in the viewer, four 24 MP images: every mode, the reference stepped with `X`, an
+  image taken out with `Ctrl+3`, the metrics panel, the automatic alignment of three images (the
+  moved one found at x 23.6, y -14.2, 0.75°, 100.4 %, alike 0.9991; the other two left as they
+  were), split and difference in 3D, the circle through three points with its numbers. Two
+  images: split, swap, blend and difference as before.
+
+**Written but not tested:** dragging the dividers and the opacity sliders with the mouse; the
+images menu in the right-click menu; `Shift+X`; saving any view of more than two images from the
+viewer (the file export itself is unit-tested); the align panel's ticks, "Tick all / none", "Stop"
+and its number fields with several images; a drag-turn of several images; the reference changed
+during an automatic alignment; a 3-point circle in a comparison's panes; the frame times of the
+stack modes with many images (each image is a pass of its own: 16 images at 4K is 32 full-pane
+passes a frame).
+
+**Not done:**
+
+- The pixel values written into the pixels of a stack of three or more show the reference's only.
+- The SSIM maps of many images are large: one float per canvas pixel each, on the CPU and the GPU
+  (some 200 MB for a 24 MP pair); they are dropped when their image leaves the views.
+- No per-image opacity for the split or the checkerboard, and no way to reorder the stack other
+  than by the reference.
 
 ## 10. Risks
 

@@ -20,6 +20,11 @@ namespace Fiv.App;
 // All images of a set share the canvas (see CompareGeometry): zoom and position are kept in
 // canvas coordinates, so one view state moves every pane alike and the same canvas point is
 // under the cursor in each. The display controls are shared too.
+//
+// The modes that show several images at once take the images that are shown, all of them
+// unless some are taken out, beginning with the reference (see CompareSelection): side by side
+// and in the grid a pane each; split, blend, overlay and checkerboard all in one pane; the
+// difference and the similarity a pane for each image against the reference.
 internal sealed unsafe partial class MainWindow
 {
     public const int MaxCompare = 16;
@@ -45,29 +50,62 @@ internal sealed unsafe partial class MainWindow
 
         /// <summary>Its values are among those a measurement shows: the plot of a line, the histogram and the numbers of an area (see MainWindow.Measure).</summary>
         public bool Measured = true;
+
+        /// <summary>Its opacity over the images before it in the blend, once the blend is no longer an equal mix.</summary>
+        public float Opacity = 0.5f;
+
+        /// <summary>Its opacity in the overlay, where every image counts by its own (see OverlayMix): 1 opaque, 0 not there.</summary>
+        public float OverlayOpacity = 1;
+
+        /// <summary>What its last automatic alignment said (see MainWindow.Align).</summary>
+        public string? AlignReport;
+
+        /// <summary>How alike it is to the reference as it lies, and what that was worked out for (see MainWindow.Align).</summary>
+        public double Score = double.NaN;
+        public ScoreKey ScoreKey;
+        public bool ScoreKnown;
     }
 
-    /// <summary>A rectangle of the view and the one or two images of the set shown in it.</summary>
+    /// <summary>A rectangle of the view and the images of the set shown in it.</summary>
     struct Pane
     {
         public PaneRect Rect;
-        public int First, Second; // Second is -1 unless the pane combines two images
+
+        /// <summary>The image shown; of a pane that compares two, the reference; of a stack, the first of it.</summary>
+        public int First;
+
+        /// <summary>The image compared with the reference, or -1.</summary>
+        public int Second;
+
+        /// <summary>The pane lays every image shown into one (see <see cref="_order"/>).</summary>
+        public bool Stack;
     }
 
     readonly List<CompareItem> _compare = [];
     readonly CompareSelection _pick = new();
     readonly Pane[] _panes = new Pane[MaxCompare];
     int _paneCount;
+
+    /// <summary>The images shown, in the order the views take them: the reference first.</summary>
+    readonly int[] _order = new int[MaxCompare];
+    int _orderCount;
+
     CompareRenderer? _compareRenderer;
+    readonly MixLayer[] _layers = new MixLayer[MaxCompare];
+    readonly float[] _overlayOpacities = new float[MaxCompare], _overlayPasses = new float[MaxCompare];
     CompareMode _compareMode = CompareMode.SideBySide;
     SizeMatch _sizeMatch = SizeMatch.TopLeft;
     double _canvasWidth, _canvasHeight;
     int _singleItem = -1; // the image the single view shows: the active one once it can be drawn
     bool _linked = true, _linkedCursor = true, _paneLabels = true, _showComparePanel = true;
     bool _splitRows, _blink, _blinkAll;
-    float _splitAt = 0.5f, _opacity = 0.5f;
+
+    /// <summary>The dividers of the split, as fractions of the pane from its left or top edge, in increasing order: one fewer than there are strips.</summary>
+    readonly float[] _dividers = new float[MaxCompare - 1];
+    int _dividersFor;          // the number of strips they are laid out for: another number starts them over, evenly
+    bool _blendEqual = true;   // the blend is an equal mix of the images shown, until an opacity is set by hand
     int _checkerSize = 64, _blinkMs = 500;
-    bool _dragDivider;
+    int _dragDivider = -1;
     int _dragItem = -1;
     bool _compareReady;   // every image on show has been presented at full resolution
     bool _windowTouched;  // the user set the brightness window; it is no longer chosen automatically
@@ -103,9 +141,9 @@ internal sealed unsafe partial class MainWindow
         _compareReady = false;
         _compareError = null;
         _dragItem = -1;
-        _dragDivider = false;
-        _splitAt = 0.5f;
-        _opacity = 0.5f;
+        _dragDivider = -1;
+        _dividersFor = 0;
+        _blendEqual = true;
         _differenceGain = 1;
         ResetMetrics();
         ResetAlign();
@@ -142,9 +180,10 @@ internal sealed unsafe partial class MainWindow
         _compare.Clear();
         _pick.Reset(0);
         _paneCount = 0;
+        _orderCount = 0;
         _singleItem = -1;
         _dragItem = -1;
-        _dragDivider = false;
+        _dragDivider = -1;
         _compareError = null;
         _compareRenderer?.ReleaseTargets();
         ResetMetrics();
@@ -447,10 +486,10 @@ internal sealed unsafe partial class MainWindow
         if (mode == _compareMode) return;
         if (mode != CompareMode.Single) StopBlink();
         _compareMode = mode;
-        if (!mode.IsOverlay()) _compareRenderer?.ReleaseTargets(); // only the modes that combine two images need them
+        if (!mode.IsOverlay()) _compareRenderer?.ReleaseTargets(); // only the modes that combine images need them
         if (!Comparing) return;
         _dragItem = -1;
-        _dragDivider = false;
+        _dragDivider = -1;
         _compareReady = false;
         AdvanceCompare();
     }
@@ -468,6 +507,47 @@ internal sealed unsafe partial class MainWindow
             foreach (CompareItem item in _compare) item.View = _view;
         }
         _linked = linked;
+    }
+
+    /// <summary>Takes an image into the views that show several, or out of them; says why not if it cannot be.</summary>
+    void SetShown(int item, bool shown)
+    {
+        if (_pick.SetShown(item, shown))
+        {
+            _compareReady = false;
+            Invalidate();
+        }
+        else if (!shown && _pick.IsShown(item))
+        {
+            Notice(item == _pick.Reference ? "The reference stays in the views: make another image the reference first." : "One image at least stays in the views.");
+        }
+    }
+
+    /// <summary>Makes an image the reference: the others are compared with it, and aligned to it.</summary>
+    void SetReference(int item)
+    {
+        if (!_pick.SetReference(item)) return;
+        OnReferenceChanged();
+    }
+
+    /// <summary>X, Shift+X: the next or the previous image shown becomes the reference; of two, they swap.</summary>
+    void StepReference(int delta)
+    {
+        if (!_pick.StepReference(delta))
+        {
+            Notice("Only the reference is in the views: there is no other image to make the reference.");
+            return;
+        }
+        OnReferenceChanged();
+        Notice($"Reference: {_pick.Reference + 1}  {Path.GetFileName(_compare[_pick.Reference].Path)}");
+    }
+
+    void OnReferenceChanged()
+    {
+        _compareReady = false;
+        _alignLastAction = AlignAction.None; // what is moved has changed: undo starts over
+        if (_alignRunning) StopAutoAlign("Stopped: the reference changed."); // the poses on their way are to the reference that was
+        Invalidate();
     }
 
     void ToggleBlink()
@@ -506,17 +586,38 @@ internal sealed unsafe partial class MainWindow
         if (_blinkAll ? _pick.Step(1) : _pick.Toggle()) OnComparePick();
     }
 
-    /// <summary>Up and Down change the one parameter the current mode has.</summary>
+    /// <summary>Where an image is among those shown, in the order the views take them; -1 if it is not shown.</summary>
+    int PositionOf(int item) => Array.IndexOf(_order, item, 0, _orderCount);
+
+    /// <summary>
+    /// Up and Down change the one parameter the current mode has. Of a split with several
+    /// dividers, the one after the active image's strip; of a blend, the active image's opacity,
+    /// or the top one's if the active image is at the bottom or not shown; of the overlay, the
+    /// active image's opacity, or the first one's in the view if the active one is not.
+    /// </summary>
     void AdjustMix(int direction, bool fine)
     {
         switch (_compareMode)
         {
-            case CompareMode.Split:
-                _splitAt = Math.Clamp(_splitAt + direction * (fine ? 0.01f : 0.05f), 0, 1);
+            case CompareMode.Split when _orderCount > 1:
+            {
+                int position = PositionOf(_pick.Active), divider = position >= 0 && position < _orderCount - 1 ? position : _orderCount - 2;
+                MoveDivider(divider, _dividers[divider] + direction * (fine ? 0.01f : 0.05f));
                 break;
-            case CompareMode.Blend:
-                _opacity = Math.Clamp(MathF.Round((_opacity + direction * (fine ? 0.01f : 0.1f)) * 100) / 100, 0, 1);
+            }
+            case CompareMode.Blend when _orderCount > 1:
+            {
+                int position = PositionOf(_pick.Active);
+                if (position <= 0) position = _orderCount - 1;
+                SetOpacity(position, MathF.Round((OpacityOf(position) + direction * (fine ? 0.01f : 0.1f)) * 100) / 100);
                 break;
+            }
+            case CompareMode.Overlay when _orderCount > 0:
+            {
+                CompareItem item = _compare[PositionOf(_pick.Active) >= 0 ? _pick.Active : _order[0]];
+                item.OverlayOpacity = Math.Clamp(MathF.Round((item.OverlayOpacity + direction * (fine ? 0.01f : 0.1f)) * 100) / 100, 0, 1);
+                break;
+            }
             case CompareMode.Checker:
                 _checkerSize = Math.Clamp(direction > 0 ? _checkerSize * 2 : _checkerSize / 2, Settings.MinCheckerSize, Settings.MaxCheckerSize);
                 break;
@@ -534,6 +635,40 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
+    // ---------------------------------------------------------------- split and blend
+
+    /// <summary>Lays the dividers out evenly for the strips there are, if they are laid out for another number.</summary>
+    void EnsureDividers()
+    {
+        if (_dividersFor == _orderCount) return;
+        _dividersFor = _orderCount;
+        for (int i = 0; i < _orderCount - 1; i++) _dividers[i] = (i + 1) / (float)_orderCount;
+    }
+
+    /// <summary>Moves a divider, as far as the dividers next to it and the pane's edges let it go.</summary>
+    void MoveDivider(int divider, float at)
+    {
+        if (divider < 0 || divider >= _orderCount - 1) return;
+        float low = divider > 0 ? _dividers[divider - 1] : 0, high = divider < _orderCount - 2 ? _dividers[divider + 1] : 1;
+        _dividers[divider] = Math.Clamp(at, low, high);
+    }
+
+    /// <summary>The opacity of the image at a place in the blend over those before it: an equal mix until one is set by hand. The first lies over nothing.</summary>
+    float OpacityOf(int position) =>
+        position <= 0 ? 1 : _blendEqual ? 1f / (position + 1) : _compare[_order[position]].Opacity;
+
+    /// <summary>Sets an opacity by hand. The others keep the share of the mix they had.</summary>
+    void SetOpacity(int position, float opacity)
+    {
+        if (position <= 0 || position >= _orderCount) return;
+        if (_blendEqual)
+        {
+            for (int k = 1; k < _orderCount; k++) _compare[_order[k]].Opacity = OpacityOf(k);
+            _blendEqual = false;
+        }
+        _compare[_order[position]].Opacity = Math.Clamp(opacity, 0, 1);
+    }
+
     // ---------------------------------------------------------------- layout and transforms
 
     /// <summary>The view an image is drawn with: the shared one, or its own where each pane has its own.</summary>
@@ -543,6 +678,9 @@ internal sealed unsafe partial class MainWindow
         return ref _compare[item].View;
     }
 
+    /// <summary>The image a pane is of: the one compared with the reference, or the one it shows.</summary>
+    static int PaneItem(in Pane pane) => pane.Second >= 0 ? pane.Second : pane.First;
+
     /// <summary>
     /// Works out the canvas and the panes from the set, the mode and the view rectangle, and
     /// keeps views that are fitted to the window fitted. Cheap, and called before anything that
@@ -551,6 +689,7 @@ internal sealed unsafe partial class MainWindow
     void LayoutCompare()
     {
         _paneCount = 0;
+        _orderCount = 0;
         if (!Comparing) return;
         double width = 0, height = 0;
         foreach (CompareItem item in _compare)
@@ -561,9 +700,11 @@ internal sealed unsafe partial class MainWindow
         }
         _canvasWidth = width;
         _canvasHeight = height;
+        _orderCount = _pick.Order(_order);
+        EnsureDividers();
 
         var area = new PaneRect(ViewX, ViewY, ViewWidth, ViewHeight);
-        (int first, int second) = _pick.Pair;
+        int gap = Math.Max(1, (int)Math.Round(2 * _dpiScale));
         switch (_compareMode)
         {
             case CompareMode.Single:
@@ -571,15 +712,24 @@ internal sealed unsafe partial class MainWindow
                 break;
             case CompareMode.SideBySide or CompareMode.Grid:
             {
-                bool grid = _compareMode == CompareMode.Grid;
-                int count = grid ? _compare.Count : 2, gap = Math.Max(1, (int)Math.Round(2 * _dpiScale));
-                (int columns, int rows) = CompareGeometry.BestGrid(count, area.Width, area.Height, width, height, gap);
-                for (int i = 0; i < count; i++)
-                    _panes[_paneCount++] = new Pane { Rect = CompareGeometry.Pane(i, columns, rows, area, gap), First = grid ? i : i == 0 ? first : second, Second = -1 };
+                (int columns, int rows) = _compareMode == CompareMode.Grid
+                    ? CompareGeometry.BestGrid(_orderCount, area.Width, area.Height, width, height, gap)
+                    : CompareGeometry.BestRow(_orderCount, area.Width, area.Height, width, height, gap);
+                for (int i = 0; i < _orderCount; i++)
+                    _panes[_paneCount++] = new Pane { Rect = CompareGeometry.Pane(i, columns, rows, area, gap), First = _order[i], Second = -1 };
+                break;
+            }
+            case CompareMode.Difference or CompareMode.Ssim:
+            {
+                // A pane for each image against the reference; the reference alone if it is the only one shown.
+                int compared = Math.Max(1, _orderCount - 1);
+                (int columns, int rows) = CompareGeometry.BestGrid(compared, area.Width, area.Height, width, height, gap);
+                for (int i = 0; i < compared; i++)
+                    _panes[_paneCount++] = new Pane { Rect = CompareGeometry.Pane(i, columns, rows, area, gap), First = _order[0], Second = _orderCount > 1 ? _order[i + 1] : -1 };
                 break;
             }
             default:
-                _panes[_paneCount++] = new Pane { Rect = area, First = first, Second = second };
+                _panes[_paneCount++] = new Pane { Rect = area, First = _order[0], Second = -1, Stack = true };
                 break;
         }
         if (width <= 0) return;
@@ -629,16 +779,28 @@ internal sealed unsafe partial class MainWindow
         return -1;
     }
 
-    /// <summary>The divider of the split view, in pixels from the pane's left (or top) edge.</summary>
-    float DividerAt(in PaneRect pane) => MathF.Round(_splitAt * (_splitRows ? pane.Height : pane.Width));
+    /// <summary>A divider of the split, in pixels from the pane's left (or top) edge.</summary>
+    float DividerAt(in PaneRect pane, int divider) => MathF.Round(_dividers[divider] * (_splitRows ? pane.Height : pane.Width));
 
-    bool NearDivider(int x, int y)
+    /// <summary>The divider of the split within reach of a point of the window, or -1.</summary>
+    int DividerNear(int x, int y)
     {
-        if (_compareMode != CompareMode.Split || _paneCount == 0 || _surface) return false;
+        if (_compareMode != CompareMode.Split || _paneCount == 0 || !_panes[0].Stack || _surface) return -1;
         PaneRect pane = _panes[0].Rect;
-        if (!pane.Contains(x, y)) return false;
-        float distance = _splitRows ? y - pane.Y - DividerAt(pane) : x - pane.X - DividerAt(pane);
-        return MathF.Abs(distance) <= 6 * (float)_dpiScale;
+        if (!pane.Contains(x, y)) return -1;
+        float at = _splitRows ? y - pane.Y : x - pane.X, best = 6 * (float)_dpiScale;
+        int nearest = -1;
+        for (int i = 0; i < _orderCount - 1; i++)
+        {
+            float divider = DividerAt(pane, i), distance = MathF.Abs(at - divider);
+            // Of dividers on top of each other, the one that can go where the mouse is: the first to its left, the last to its right.
+            if (distance < best || (distance == best && nearest >= 0 && at > divider))
+            {
+                best = distance;
+                nearest = i;
+            }
+        }
+        return nearest;
     }
 
     /// <summary>The canvas point under the mouse, if the mouse is over a pane.</summary>
@@ -670,6 +832,58 @@ internal sealed unsafe partial class MainWindow
     GpuImage? Drawable(int item) =>
         item >= 0 && item < _compare.Count && _compare[item].Image is { HasSize: true } image ? image.BestGpu : null;
 
+    /// <summary>
+    /// The images shown, as the combine pass lays them into the stack pane at <paramref name="r"/>:
+    /// each through <paramref name="canvasToTarget"/> into the target, with its strip of a split
+    /// (where the pane has it, through <paramref name="paneToTarget"/>), or the opacity of its pass
+    /// in a blend or in the overlay. Into <see cref="_layers"/>; returns how many.
+    /// </summary>
+    int StackLayers(in PaneRect r, in Affine2 canvasToTarget, in Affine2 paneToTarget)
+    {
+        if (_compareMode == CompareMode.Overlay)
+        {
+            // Each image counts by its own opacity: drawn as layer over layer, with the opacities that make that.
+            for (int k = 0; k < _orderCount; k++) _overlayOpacities[k] = _compare[_order[k]].OverlayOpacity;
+            OverlayMix.PassOpacities(_overlayOpacities.AsSpan(0, _orderCount), _overlayPasses);
+        }
+        for (int k = 0; k < _orderCount; k++)
+        {
+            int item = _order[k];
+            GpuImage? texture = Drawable(item);
+            Affine2 toTarget = Affine2.Identity;
+            double zoom = 1;
+            if (texture != null)
+            {
+                toTarget = canvasToTarget.After(ImageToCanvas(item));
+                zoom = canvasToTarget.A * PlacementOf(_compare[item].Image!).A * _compare[item].Pose.Scale;
+            }
+            float amount = 0;
+            if (_compareMode == CompareMode.Split && k < _orderCount - 1)
+            {
+                (double x, double y) = paneToTarget.Apply(DividerAt(r, k), DividerAt(r, k));
+                amount = (float)(_splitRows ? y : x);
+            }
+            else if (_compareMode == CompareMode.Blend)
+            {
+                amount = OpacityOf(k);
+            }
+            else if (_compareMode == CompareMode.Overlay)
+            {
+                amount = _overlayPasses[k];
+            }
+            _layers[k] = new MixLayer(texture, toTarget, zoom, amount);
+        }
+        return _orderCount;
+    }
+
+    /// <summary>How the stack is combined; its checkerboard's cells centred on <paramref name="originX"/>, <paramref name="originY"/> and <paramref name="cellSize"/> wide.</summary>
+    MixSettings StackMix(float cellSize, float originX, float originY) => _compareMode switch
+    {
+        CompareMode.Split => new MixSettings { Kind = _splitRows ? MixKind.SplitRows : MixKind.SplitColumns },
+        CompareMode.Blend or CompareMode.Overlay => new MixSettings { Kind = MixKind.Blend },
+        _ => new MixSettings { Kind = MixKind.Checker, Amount = cellSize, OriginX = originX, OriginY = originY },
+    };
+
     /// <summary>Draws the panes. Called between BeginFrame and the UI.</summary>
     void RenderCompare()
     {
@@ -686,51 +900,39 @@ internal sealed unsafe partial class MainWindow
                 RenderSurfacePane(pane);
                 continue;
             }
-            if (pane.Second < 0)
+            if (pane.Second < 0 && !pane.Stack)
             {
                 if (Drawable(pane.First) is not { } texture) continue;
                 LoadedImage image = _compare[pane.First].Image!;
                 _renderer!.Draw(texture, CanvasToScreen(pane.First, r).After(ImageToCanvas(pane.First)), ZoomOf(pane.First, image), _display, r.X, r.Y, r.Width, r.Height);
                 continue;
             }
-
-            // Two images in one pane: each into its own target, then combined.
-            GpuImage? a = Drawable(pane.First), b = Drawable(pane.Second);
-            Affine2 aToPane = Affine2.Identity, bToPane = Affine2.Identity;
-            double zoomA = 1, zoomB = 1;
-            if (a != null)
-            {
-                aToPane = CanvasToPane(pane.First, r).After(ImageToCanvas(pane.First));
-                zoomA = ZoomOf(pane.First, _compare[pane.First].Image!);
-            }
-            if (b != null)
-            {
-                bToPane = CanvasToPane(pane.Second, r).After(ImageToCanvas(pane.Second));
-                zoomB = ZoomOf(pane.Second, _compare[pane.Second].Image!);
-            }
-            MixSettings mix = _compareMode switch
-            {
-                CompareMode.Split => new MixSettings { Kind = _splitRows ? MixKind.SplitRows : MixKind.SplitColumns, Amount = DividerAt(r) },
-                CompareMode.Blend => new MixSettings { Kind = MixKind.Blend, Amount = _opacity },
-                CompareMode.Difference => DifferenceMix(),
-                _ => new MixSettings { Kind = MixKind.Checker, Amount = _checkerSize, OriginX = r.Width / 2, OriginY = r.Height / 2 },
-            };
             try
             {
-                if (_compareMode == CompareMode.Ssim)
+                _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
+                if (pane.Stack)
+                {
+                    // All the images shown in one pane: a pass each.
+                    int count = StackLayers(r, CanvasToPane(pane.First, r), Affine2.Identity);
+                    _compareRenderer.Draw(_layers.AsSpan(0, count), _display, StackMix(_checkerSize, r.Width / 2f, r.Height / 2f), r.X, r.Y, r.Width, r.Height, Backdrop);
+                }
+                else if (_compareMode == CompareMode.Ssim)
                 {
                     RenderSimilarity(pane, r);
                 }
                 else
                 {
-                    _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
-                    _compareRenderer.Draw(a, aToPane, zoomA, b, bToPane, zoomB, _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
+                    // An image against the reference: each into its own target, then their difference.
+                    GpuImage? a = Drawable(pane.First), b = Drawable(pane.Second);
+                    MixLayer first = a != null ? new MixLayer(a, CanvasToPane(pane.First, r).After(ImageToCanvas(pane.First)), ZoomOf(pane.First, _compare[pane.First].Image!)) : default;
+                    MixLayer second = b != null ? new MixLayer(b, CanvasToPane(pane.Second, r).After(ImageToCanvas(pane.Second)), ZoomOf(pane.Second, _compare[pane.Second].Image!)) : default;
+                    _compareRenderer.Draw([first, second], _display, DifferenceMix(), r.X, r.Y, r.Width, r.Height, Backdrop);
                 }
                 _compareError = null;
             }
             catch (GraphicsException e)
             {
-                // Most likely no video memory for the two targets. The other modes still work.
+                // Most likely no video memory for the targets. The other modes still work.
                 _compareError = "This compare mode could not be drawn: " + e.Message;
                 _gpu!.BindBackBuffer();
                 _gpu.SetViewport(0, 0, _gpu.Width, _gpu.Height);
@@ -738,17 +940,32 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
+    /// <summary>The images of a pane, into <paramref name="items"/> (room for <see cref="MaxCompare"/>); returns how many.</summary>
+    int PaneImages(in Pane pane, Span<int> items)
+    {
+        if (pane.Stack)
+        {
+            _order.AsSpan(0, _orderCount).CopyTo(items);
+            return _orderCount;
+        }
+        items[0] = pane.First;
+        if (pane.Second < 0) return 1;
+        items[1] = pane.Second;
+        return 2;
+    }
+
     /// <summary>After a frame of the comparison was presented: timestamps for the overlay, the log and the benchmarks.</summary>
     void AfterCompareFrame(long presented)
     {
         bool complete = _paneCount > 0;
         bool activeDrawn = false;
+        Span<int> items = stackalloc int[MaxCompare];
         for (int p = 0; p < _paneCount; p++)
         {
-            for (int slot = 0; slot < 2; slot++)
+            int count = PaneImages(_panes[p], items);
+            for (int slot = 0; slot < count; slot++)
             {
-                int item = slot == 0 ? _panes[p].First : _panes[p].Second;
-                if (slot == 1 && item < 0) continue;
+                int item = items[slot];
                 LoadedImage? image = item >= 0 && item < _compare.Count ? _compare[item].Image : null;
                 if (image?.BestGpu == null)
                 {
@@ -835,6 +1052,8 @@ internal sealed unsafe partial class MainWindow
         ReadOnlySpan<char> name = Path.GetFileName(entry.Path.AsSpan());
         if (entry.Image is not { HasSize: true } image) return Utf8.TryWrite(_utf8, $"{item + 1}  {name}\0", out _);
         if (!Utf8.TryWrite(_utf8, $"{item + 1}  {name}   {image.UprightWidth:0} x {image.UprightHeight:0}", out int n)) return false;
+        // In the overlay, how much of it is there.
+        if (_compareMode == CompareMode.Overlay && Utf8.TryWrite(_utf8.AsSpan(n, _utf8.Length - n - 1), $"   {entry.OverlayOpacity * 100:0} %", out int opacity)) n += opacity;
         // An image that has been moved says by how much: what is compared is no longer the file as it is.
         if (!entry.Pose.IsIdentity && Utf8.TryWrite(_utf8.AsSpan(n, _utf8.Length - n - 1), $"   moved  ", out int more))
         {
@@ -857,7 +1076,7 @@ internal sealed unsafe partial class MainWindow
         return true;
     }
 
-    /// <summary>Labels, readouts, the linked cursor, the active pane's frame and the divider. Drawn behind the panels, over the image.</summary>
+    /// <summary>Labels, readouts, the linked cursor, the active pane's frame and the dividers. Drawn behind the panels, over the image.</summary>
     void DrawCompareOverlays()
     {
         LayoutCompare();
@@ -875,80 +1094,140 @@ internal sealed unsafe partial class MainWindow
             Vector2 p0 = new(r.X, r.Y), p1 = new(r.Right, r.Bottom);
             draw.PushClipRect(p0, p1, true);
 
-            if (pane.Second < 0)
+            if (pane.Stack)
             {
-                DrawPaneState(draw, pane.First, r);
+                DrawStackOverlays(draw, pane, r, margin, scale);
+            }
+            else if (pane.Second < 0)
+            {
+                DrawPaneState(draw, pane, r);
                 if (pane.First >= 0)
                 {
                     if (_pixelValues && !_surface && _compare[pane.First].Image is { HasSize: true } image)
                         DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight, image, ImageToCanvas(pane.First).Inverse(), null, Affine2.Identity);
                     if (!_surface) DrawRegion(draw, pane.First, r, scale);
                     DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: false);
-                    if (_linkedCursor && cursor && p != hovered)
-                    {
-                        (double sx, double sy) = CanvasToScreen(pane.First, r).Apply(canvasX, canvasY);
-                        DrawCrosshair(draw, (float)sx, (float)sy, scale);
-                    }
+                    if (_compareMode.IsPairwise()) CentreNote(draw, r, "Tick another image in the compare panel (P) to compare it with this one, the reference.");
                 }
-                if (_compareMode.HasPanes() && pane.First == _pick.Active) draw.AddRect(p0, p1, ColorCurrent);
             }
             else
             {
-                // Two images in the pane: the first is named in the left corner, the second in the right one (below the 3D button).
-                if (_pixelValues && !_surface && pane.First >= 0 && pane.Second >= 0 &&
-                    _compare[pane.First].Image is { HasSize: true } imageA && _compare[pane.Second].Image is { HasSize: true } imageB)
+                // An image against the reference: the reference is named in the left corner, the image in the right one (below the 3D button).
+                if (_pixelValues && !_surface && _compare[pane.First].Image is { HasSize: true } imageA && _compare[pane.Second].Image is { HasSize: true } imageB)
                 {
                     DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight,
                         imageA, ImageToCanvas(pane.First).Inverse(), imageB, ImageToCanvas(pane.Second).Inverse());
                 }
                 if (!_surface) DrawRegion(draw, pane.First, r, scale);
-                DrawPaneState(draw, pane.First, r, pane.Second);
+                DrawPaneState(draw, pane, r);
                 DrawImagePlates(draw, pane.First, r.X + margin, r.Y + margin, fromRight: false, numbered: true);
-                DrawImagePlates(draw, pane.Second, r.Right - margin, MathF.Max(r.Y + margin, _surfacePanelBottom + margin), fromRight: true, numbered: true);
-                if (_compareMode == CompareMode.Split && !_surface) DrawDivider(draw, r, scale);
-                if (_compareMode is CompareMode.Difference or CompareMode.Ssim)
+                DrawImagePlates(draw, pane.Second, r.Right - margin, BelowSurfaceButton(r.Right, r.Y + margin, margin), fromRight: true, numbered: true);
+                DrawColorBar(draw, pane, r, scale);
+                // What the two differ by under the cursor, between their two readouts.
+                if (WriteDifferenceReadout(pane))
                 {
-                    DrawColorBar(draw, r, scale);
-                    // What the two differ by under the cursor, between their two readouts.
-                    if (WriteDifferenceReadout())
+                    fixed (byte* text = _utf8)
                     {
-                        fixed (byte* text = _utf8)
-                        {
-                            float width = ImGui.CalcTextSize(text).X + 2 * MathF.Round(4 * scale);
-                            Plate(draw, MathF.Floor(r.X + (r.Width - width) / 2), r.Y + margin, ColorDelta);
-                        }
-                    }
-                    if (_compareMode == CompareMode.Ssim && !SimilarityReady && _compareError == null && Drawable(pane.First) != null && Drawable(pane.Second) != null)
-                    {
-                        Utf8Of(_metricsError ?? (TryMetricsKey(out _) ? "Computing the structural similarity..." : "Waiting for both images in full..."));
-                        fixed (byte* text = _utf8)
-                        {
-                            Vector2 size = ImGui.CalcTextSize(text);
-                            Plate(draw, MathF.Floor(r.X + (r.Width - size.X) / 2), MathF.Floor(r.Y + (r.Height - size.Y) / 2), ColorTextDim);
-                        }
+                        float width = ImGui.CalcTextSize(text).X + 2 * MathF.Round(4 * scale);
+                        Plate(draw, MathF.Floor(r.X + (r.Width - width) / 2), r.Y + margin, ColorDelta);
                     }
                 }
+                if (_compareMode == CompareMode.Ssim && SimilarityOf(pane.First, pane.Second) == null && _compareError == null && Drawable(pane.First) != null && Drawable(pane.Second) != null)
+                {
+                    string? error = TryMetricsKey(pane.First, pane.Second, out MetricsKey key) && _metricsFailed.TryGetValue(key, out string? failed) ? failed : null;
+                    CentreNote(draw, r, error ?? (TryMetricsKey(pane.First, pane.Second, out _) ? "Computing the structural similarity..." : "Waiting for both images in full..."));
+                }
             }
+
+            // The point under the mouse, in the panes the mouse is not in.
+            if (_linkedCursor && cursor && p != hovered && pane.First >= 0)
+            {
+                (double sx, double sy) = CanvasToScreen(pane.First, r).Apply(canvasX, canvasY);
+                DrawCrosshair(draw, (float)sx, (float)sy, scale);
+            }
+            if (_paneCount > 1 && PaneItem(pane) == _pick.Active) draw.AddRect(p0, p1, ColorCurrent);
             draw.PopClipRect();
         }
 
-        if (_dragDivider || (!_panning && NearDivider(_mouseX, _mouseY)))
+        if (_dragDivider >= 0 || (!_panning && DividerNear(_mouseX, _mouseY) >= 0))
             ImGui.SetMouseCursor(_splitRows ? ImGuiMouseCursor.ResizeNs : ImGuiMouseCursor.ResizeEw);
         else if ((_regionArmed || _alignRegionArmed || _dragRegion) && hovered >= 0)
             ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeAll);
         else if (_dragAlign || (_alignMode && hovered >= 0))
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand); // a drag moves the image, not the view
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand); // a drag moves the images, not the view
+    }
+
+    /// <summary>
+    /// Over the pane that lays every image shown into one: the names and readouts, the dividers
+    /// of a split, the region. Of two images, the first is named in the left corner and the
+    /// second in the right one; of more, a split names each in its strip, and the blend and the
+    /// checkerboard list them down the left side.
+    /// </summary>
+    void DrawStackOverlays(ImDrawListPtr draw, in Pane pane, in PaneRect r, float margin, float scale)
+    {
+        if (_pixelValues && !_surface && _orderCount >= 1 && _compare[_order[0]].Image is { HasSize: true } first)
+        {
+            // Of two, both and their difference; of more, the reference's.
+            LoadedImage? second = _orderCount == 2 && _compare[_order[1]].Image is { HasSize: true } image ? image : null;
+            DrawPixelValues(draw, r, CanvasToScreen(pane.First, r), _canvasWidth, _canvasHeight,
+                first, ImageToCanvas(_order[0]).Inverse(), second, second != null ? ImageToCanvas(_order[1]).Inverse() : Affine2.Identity);
+        }
+        if (!_surface) DrawRegion(draw, pane.First, r, scale);
+        DrawPaneState(draw, pane, r);
+        bool numbered = _orderCount > 1;
+        if (_orderCount <= 2)
+        {
+            DrawImagePlates(draw, _order[0], r.X + margin, r.Y + margin, fromRight: false, numbered);
+            if (_orderCount == 2) DrawImagePlates(draw, _order[1], r.Right - margin, BelowSurfaceButton(r.Right, r.Y + margin, margin), fromRight: true, numbered);
+        }
+        else if (_compareMode == CompareMode.Split && !_surface)
+        {
+            for (int k = 0; k < _orderCount; k++)
+            {
+                float start = k > 0 ? DividerAt(r, k - 1) : 0, end = k < _orderCount - 1 ? DividerAt(r, k) : _splitRows ? r.Height : r.Width;
+                if (end <= start) continue;
+                Vector2 c0 = _splitRows ? new Vector2(r.X, r.Y + start) : new Vector2(r.X + start, r.Y);
+                Vector2 c1 = _splitRows ? new Vector2(r.Right, r.Y + end) : new Vector2(r.X + end, r.Bottom);
+                draw.PushClipRect(c0, c1, true);
+                DrawImagePlates(draw, _order[k], c0.X + margin, BelowSurfaceButton(c1.X, c0.Y + margin, margin), fromRight: false, numbered);
+                draw.PopClipRect();
+            }
+        }
+        else
+        {
+            float y = r.Y + margin, gap = MathF.Round(4 * scale);
+            for (int k = 0; k < _orderCount && y < r.Bottom; k++) y = DrawImagePlates(draw, _order[k], r.X + margin, y, fromRight: false, numbered) + gap;
+        }
+        if (_compareMode == CompareMode.Split && !_surface)
+            for (int i = 0; i < _orderCount - 1; i++) DrawDivider(draw, r, i, scale);
+    }
+
+    /// <summary>A height <paramref name="y"/> moved below the 3D button in the view's top right corner, for what reaches as far right as <paramref name="right"/>.</summary>
+    float BelowSurfaceButton(float right, float y, float margin) => right >= ViewX + ViewWidth - 1 ? MathF.Max(y, _surfacePanelBottom + margin) : y;
+
+    /// <summary>A line of text on a plate in the middle of a pane.</summary>
+    void CentreNote(ImDrawListPtr draw, in PaneRect r, string text)
+    {
+        Utf8Of(text);
+        fixed (byte* bytes = _utf8)
+        {
+            Vector2 size = ImGui.CalcTextSize(bytes);
+            Plate(draw, MathF.Floor(r.X + (r.Width - size.X) / 2), MathF.Floor(r.Y + (r.Height - size.Y) / 2), ColorTextDim);
+        }
     }
 
     /// <summary>
     /// An image's name and, under it, the position and values of its pixel under the linked cursor.
     /// The readout is always shown; with the names switched off it says which image it belongs to.
+    /// Returns where below them the next line could go.
     /// </summary>
-    void DrawImagePlates(ImDrawListPtr draw, int item, float x, float y, bool fromRight, bool numbered)
+    float DrawImagePlates(ImDrawListPtr draw, int item, float x, float y, bool fromRight, bool numbered)
     {
-        if (item < 0 || item >= _compare.Count) return;
-        if (_paneLabels && WriteLabel(item)) y += Plate(draw, x, y, fromRight: fromRight) + MathF.Round(2 * (float)_dpiScale);
-        if (WriteReadout(item, numbered && !_paneLabels)) Plate(draw, x, y, fromRight: fromRight);
+        if (item < 0 || item >= _compare.Count) return y;
+        float gap = MathF.Round(2 * (float)_dpiScale);
+        if (_paneLabels && WriteLabel(item)) y += Plate(draw, x, y, fromRight: fromRight) + gap;
+        if (WriteReadout(item, numbered && !_paneLabels)) y += Plate(draw, x, y, fromRight: fromRight) + gap;
+        return y;
     }
 
     /// <summary>The name and size of an image shown on its own, in the corner where a pane of a comparison has them.</summary>
@@ -964,32 +1243,28 @@ internal sealed unsafe partial class MainWindow
         draw.PopClipRect();
     }
 
-    /// <summary>What a pane says while it has no picture: that it is loading, or why it cannot be shown.</summary>
-    void DrawPaneState(ImDrawListPtr draw, int first, in PaneRect r, int second = -1)
+    /// <summary>What a pane says while it has no picture: that it is loading, or why one of its images cannot be shown.</summary>
+    void DrawPaneState(ImDrawListPtr draw, in Pane pane, in PaneRect r)
     {
         string? text = _compareError;
         if (text == null)
         {
-            for (int slot = 0; slot < 2 && text == null; slot++)
+            Span<int> items = stackalloc int[MaxCompare];
+            int count = PaneImages(pane, items);
+            for (int slot = 0; slot < count && text == null; slot++)
             {
-                int item = slot == 0 ? first : second;
+                int item = items[slot];
                 if (item < 0 || item >= _compare.Count)
                 {
                     if (slot == 0) text = "Loading";
                     continue;
                 }
                 LoadedImage? image = _compare[item].Image;
-                if (image?.Error != null) text = image.Error;
+                if (image?.Error != null) text = count > 1 ? $"{item + 1}: {image.Error}" : image.Error;
                 else if (image?.BestGpu == null) text = "Loading";
             }
         }
-        if (text == null) return;
-        Utf8Of(text);
-        fixed (byte* bytes = _utf8)
-        {
-            Vector2 size = ImGui.CalcTextSize(bytes);
-            Plate(draw, MathF.Floor(r.X + (r.Width - size.X) / 2), MathF.Floor(r.Y + (r.Height - size.Y) / 2), ColorTextDim);
-        }
+        if (text != null) CentreNote(draw, r, text);
     }
 
     /// <summary>Marks, in a pane the mouse is not in, the point that is under the mouse in the pane it is in.</summary>
@@ -1009,9 +1284,9 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
-    void DrawDivider(ImDrawListPtr draw, in PaneRect r, float scale)
+    void DrawDivider(ImDrawListPtr draw, in PaneRect r, int divider, float scale)
     {
-        float at = DividerAt(r);
+        float at = DividerAt(r, divider);
         Vector2 from = _splitRows ? new Vector2(r.X, r.Y + at) : new Vector2(r.X + at, r.Y);
         Vector2 to = _splitRows ? new Vector2(r.Right, r.Y + at) : new Vector2(r.X + at, r.Bottom);
         draw.AddLine(from, to, ColorOutline, 3 * scale);
@@ -1030,6 +1305,7 @@ internal sealed unsafe partial class MainWindow
         CompareMode.Grid => "Grid"u8,
         CompareMode.Split => "Split"u8,
         CompareMode.Blend => "Blend"u8,
+        CompareMode.Overlay => "Overlay"u8,
         CompareMode.Difference => "Difference"u8,
         CompareMode.Ssim => "SSIM"u8,
         _ => "Checkerboard"u8,
@@ -1042,6 +1318,7 @@ internal sealed unsafe partial class MainWindow
         CompareMode.Grid => "grid",
         CompareMode.Split => "split",
         CompareMode.Blend => "blend",
+        CompareMode.Overlay => "overlay",
         CompareMode.Difference => "difference",
         CompareMode.Ssim => "structural similarity",
         _ => "checkerboard",
@@ -1050,8 +1327,9 @@ internal sealed unsafe partial class MainWindow
     float _comparePanelHeight; // as drawn last, so that a notice can be put above it
 
     /// <summary>
-    /// The compare controls: mode, its parameter, and what is linked. At the bottom of the view,
-    /// in the middle: the names and readouts of the panes are in their top corners.
+    /// The compare controls: mode, its parameters, what is linked, and the images of the set:
+    /// which of them the views take in, which is the reference, and their opacities in the blend.
+    /// At the bottom of the view, in the middle: the names and readouts of the panes are in their top corners.
     /// </summary>
     void DrawComparePanel()
     {
@@ -1078,7 +1356,7 @@ internal sealed unsafe partial class MainWindow
             ImGui.SameLine();
             ImGui.TextDisabled("|"u8);
             ImGui.SameLine();
-            if (ImGui.Button("Swap"u8)) _pick.Swapped = !_pick.Swapped;
+            if (ImGui.Button(_orderCount == 2 ? "Swap (X)"u8 : "Next reference (X)"u8)) _deferred = () => StepReference(1);
             ImGui.SameLine();
             if (ImGui.Button("Stop"u8)) _deferred = () => StopCompare();
 
@@ -1100,15 +1378,48 @@ internal sealed unsafe partial class MainWindow
                     break;
                 }
                 case CompareMode.Split:
-                    ImGui.SliderFloat("divider"u8, ref _splitAt, 0, 1);
-                    ImGui.SameLine();
+                    if (_orderCount == 2)
+                    {
+                        float divider = _dividers[0];
+                        if (ImGui.SliderFloat("divider"u8, ref divider, 0, 1)) MoveDivider(0, divider);
+                        ImGui.SameLine();
+                    }
+                    else if (_orderCount > 2)
+                    {
+                        if (ImGui.Button("Equal strips"u8)) _dividersFor = 0;
+                        ImGui.SameLine();
+                    }
                     if (ImGui.RadioButton("left | right"u8, !_splitRows)) _splitRows = false;
                     ImGui.SameLine();
                     if (ImGui.RadioButton("top | bottom"u8, _splitRows)) _splitRows = true;
                     break;
                 case CompareMode.Blend:
-                    ImGui.SliderFloat("opacity of the second image"u8, ref _opacity, 0, 1);
+                    if (_orderCount == 2)
+                    {
+                        float opacity = OpacityOf(1);
+                        if (ImGui.SliderFloat("opacity of the second image"u8, ref opacity, 0, 1)) SetOpacity(1, opacity);
+                    }
+                    else if (_orderCount > 2)
+                    {
+                        ImGui.BeginDisabled(_blendEqual);
+                        if (ImGui.Button("Equal mix"u8)) _blendEqual = true;
+                        ImGui.EndDisabled();
+                        ImGui.SameLine();
+                        ImGui.TextDisabled("the reference at the bottom, each image after it over those before, with the opacity below"u8);
+                    }
                     break;
+                case CompareMode.Overlay:
+                {
+                    bool allOpaque = true;
+                    for (int k = 0; k < _orderCount; k++) allOpaque &= _compare[_order[k]].OverlayOpacity >= 1;
+                    ImGui.BeginDisabled(allOpaque);
+                    if (ImGui.Button("All 100 %"u8))
+                        foreach (CompareItem item in _compare) item.OverlayOpacity = 1;
+                    ImGui.EndDisabled();
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("each image counts by its opacity, set below (Up / Down: the active one's); all at 100 %%: an equal mix"u8); // a format: %% is one %
+                    break;
+                }
                 case CompareMode.Checker:
                     ImGui.SliderInt("cell size"u8, ref _checkerSize, Settings.MinCheckerSize, Settings.MaxCheckerSize);
                     break;
@@ -1162,8 +1473,91 @@ internal sealed unsafe partial class MainWindow
             ImGui.SameLine();
             bool align = _alignMode;
             if (ImGui.Checkbox("Align (A)"u8, ref align)) SetAlignMode(align);
+
+            DrawCompareImages(scale);
         }
         ImGui.End();
+    }
+
+    /// <summary>
+    /// The images of the set as a table: whether the views that show several take it in, which
+    /// one is the reference, and in the blend and the overlay each one's opacity. A click on a
+    /// name makes that image the active one.
+    /// </summary>
+    void DrawCompareImages(float scale)
+    {
+        if (!Utf8.TryWrite(_utf8, $"Images: {_orderCount} of {_compare.Count} in the views; the reference is {_pick.Reference + 1}###images\0", out _)) return;
+        bool open;
+        fixed (byte* label = _utf8) open = ImGui.CollapsingHeader(label, ImGuiTreeNodeFlags.DefaultOpen);
+        if (!open) return;
+        bool blend = _compareMode == CompareMode.Blend, overlay = _compareMode == CompareMode.Overlay;
+        if (!ImGui.BeginTable("compared"u8, blend || overlay ? 4 : 3, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV)) return;
+        ImGui.TableSetupColumn("In the views (Ctrl+1..9)"u8);
+        ImGui.TableSetupColumn("Image"u8);
+        ImGui.TableSetupColumn("Reference (X)"u8);
+        if (blend) ImGui.TableSetupColumn("Opacity over those before"u8);
+        if (overlay) ImGui.TableSetupColumn("Opacity"u8);
+        ImGui.TableHeadersRow();
+        for (int i = 0; i < _compare.Count; i++)
+        {
+            ImGui.PushID(i);
+            ImGui.TableNextRow();
+            bool reference = i == _pick.Reference, shown = _pick.IsShown(i);
+
+            ImGui.TableSetColumnIndex(0);
+            ImGui.BeginDisabled(reference || (shown && _pick.ShownCount <= 1));
+            if (ImGui.Checkbox("##shown"u8, ref shown))
+            {
+                int item = i;
+                bool wanted = shown;
+                _deferred = () => SetShown(item, wanted);
+            }
+            ImGui.EndDisabled();
+
+            ImGui.TableSetColumnIndex(1);
+            int n = Utf8.TryWrite(_utf8, $"{i + 1}  {Path.GetFileName(_compare[i].Path.AsSpan())}", out int written) ? written : 0;
+            _utf8[n] = 0;
+            fixed (byte* text = _utf8)
+            {
+                if (ImGui.Selectable(text, i == _pick.Active) && _pick.Select(i))
+                {
+                    StopBlink();
+                    OnComparePick();
+                }
+            }
+
+            ImGui.TableSetColumnIndex(2);
+            if (ImGui.RadioButton("##reference"u8, reference) && !reference)
+            {
+                int item = i;
+                _deferred = () => SetReference(item);
+            }
+
+            if (blend)
+            {
+                ImGui.TableSetColumnIndex(3);
+                int position = PositionOf(i);
+                if (position == 0)
+                {
+                    ImGui.TextDisabled("at the bottom"u8);
+                }
+                else if (position > 0)
+                {
+                    float opacity = OpacityOf(position);
+                    ImGui.SetNextItemWidth(160 * scale);
+                    if (ImGui.SliderFloat("##opacity"u8, ref opacity, 0, 1)) SetOpacity(position, opacity);
+                }
+            }
+            else if (overlay && shown)
+            {
+                ImGui.TableSetColumnIndex(3);
+                float percent = _compare[i].OverlayOpacity * 100;
+                ImGui.SetNextItemWidth(220 * scale);
+                if (ImGui.SliderFloat("##overlay"u8, ref percent, 0, 100, "%.0f %%"u8)) _compare[i].OverlayOpacity = Math.Clamp(percent / 100, 0, 1);
+            }
+            ImGui.PopID();
+        }
+        ImGui.EndTable();
     }
 
     /// <summary>The colour map of the difference or similarity view, as a drop-down list.</summary>
@@ -1187,17 +1581,27 @@ internal sealed unsafe partial class MainWindow
 
     // ---------------------------------------------------------------- input
 
+    /// <summary>The digit of a number key, 1 to 9, as 0 to 8; -1 for any other key.</summary>
+    static int DigitOf(VIRTUAL_KEY key) =>
+        key is >= VIRTUAL_KEY.VK_1 and <= VIRTUAL_KEY.VK_9 ? key - VIRTUAL_KEY.VK_1
+        : key is >= VIRTUAL_KEY.VK_NUMPAD1 and <= VIRTUAL_KEY.VK_NUMPAD9 ? key - VIRTUAL_KEY.VK_NUMPAD1 : -1;
+
     /// <summary>The keys that mean something else while comparing. True if the key was one of them.</summary>
     bool CompareKey(VIRTUAL_KEY key, bool shift, bool control, bool repeat)
     {
-        if (control) return false;
+        int digit = DigitOf(key);
+        if (control)
+        {
+            // Ctrl and a number: that image out of the views that show several, or back in.
+            if (digit < 0 || shift) return false;
+            if (!repeat && digit < _compare.Count) SetShown(digit, !_pick.IsShown(digit));
+            return true;
+        }
         if (shift && key is VIRTUAL_KEY.VK_3 or VIRTUAL_KEY.VK_NUMPAD3)
         {
             ToggleSurface(); // 3 alone is the third image
             return true;
         }
-        int digit = key is >= VIRTUAL_KEY.VK_1 and <= VIRTUAL_KEY.VK_9 ? key - VIRTUAL_KEY.VK_1
-            : key is >= VIRTUAL_KEY.VK_NUMPAD1 and <= VIRTUAL_KEY.VK_NUMPAD9 ? key - VIRTUAL_KEY.VK_NUMPAD1 : -1;
         if (digit >= 0)
         {
             // Down: go to that image. Up, if the key was held: back again (OnKeyUp).
@@ -1208,7 +1612,7 @@ internal sealed unsafe partial class MainWindow
             }
             return true;
         }
-        if (AlignKey(key, shift)) return true; // while aligning, the arrow keys and their neighbours move the image
+        if (AlignKey(key, shift)) return true; // while aligning, the arrow keys and their neighbours move the images
         switch (key)
         {
             case VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_NEXT or VIRTUAL_KEY.VK_SPACE:
@@ -1240,7 +1644,7 @@ internal sealed unsafe partial class MainWindow
                 return true;
             }
             case VIRTUAL_KEY.VK_X:
-                _pick.Swapped = !_pick.Swapped;
+                StepReference(shift ? -1 : 1);
                 return true;
             case VIRTUAL_KEY.VK_K:
                 ToggleBlink();
@@ -1283,8 +1687,8 @@ internal sealed unsafe partial class MainWindow
     }
 
     /// <summary>
-    /// The left button went down: on the divider it drags the divider, elsewhere it makes the
-    /// pane's image the active one and pans; while aligning it moves the image that is being aligned.
+    /// The left button went down: on a divider it drags the divider, elsewhere it makes the
+    /// pane's image the active one and pans; while aligning it moves the images that are being aligned.
     /// </summary>
     void CompareMouseDown(int x, int y, bool shift)
     {
@@ -1294,13 +1698,14 @@ internal sealed unsafe partial class MainWindow
         // Shift a drag draws the numbers' too, except while aligning, where Shift turns the image.
         if (_alignRegionArmed && BeginRegion(x, y, forAlign: true)) return;
         if ((_regionArmed || (shift && !_alignMode)) && BeginRegion(x, y)) return;
-        _dragDivider = NearDivider(x, y);
-        if (_dragDivider) return;
+        _dragDivider = DividerNear(x, y);
+        if (_dragDivider >= 0) return;
         int p = PaneAt(x, y);
         if (p < 0) return;
         _dragItem = _panes[p].First;
-        if (_alignMode && _dragItem >= 0 && BeginAlignDrag(turn: shift)) return; // and the pair stays as it is
-        if (_compareMode.HasPanes() && _dragItem >= 0 && _pick.Select(_dragItem))
+        if (_alignMode && _dragItem >= 0 && BeginAlignDrag(turn: shift)) return; // and the active image stays as it is
+        int item = PaneItem(_panes[p]);
+        if (_paneCount > 1 && item >= 0 && _pick.Select(item))
         {
             StopBlink();
             OnComparePick();
@@ -1313,11 +1718,11 @@ internal sealed unsafe partial class MainWindow
         {
             DragRegion(x, y);
         }
-        else if (_dragDivider)
+        else if (_dragDivider >= 0)
         {
             if (_paneCount == 0) return;
             PaneRect pane = _panes[0].Rect;
-            _splitAt = Math.Clamp(_splitRows ? (y - pane.Y) / (float)pane.Height : (x - pane.X) / (float)pane.Width, 0, 1);
+            MoveDivider(_dragDivider, _splitRows ? (y - pane.Y) / (float)pane.Height : (x - pane.X) / (float)pane.Width);
         }
         else if (_dragAlign)
         {
@@ -1333,7 +1738,7 @@ internal sealed unsafe partial class MainWindow
     {
         LayoutCompare();
         int p = PaneAt(x, y);
-        if (p < 0 || _panes[p].First < 0 || _canvasWidth <= 0 || NearDivider(x, y)) return;
+        if (p < 0 || _panes[p].First < 0 || _canvasWidth <= 0 || DividerNear(x, y) >= 0) return;
         PaneRect pane = _panes[p].Rect;
         ref ViewState view = ref ViewOf(_panes[p].First);
         if (view.Fit || view.Zoom != 1) view.ZoomAt(1, x - pane.X, y - pane.Y, pane.Width, pane.Height);
@@ -1345,6 +1750,6 @@ internal sealed unsafe partial class MainWindow
     {
         LayoutCompare();
         int p = PaneAt(x, y);
-        if (p >= 0 && _compareMode.HasPanes() && _panes[p].First >= 0 && _pick.Select(_panes[p].First)) OnComparePick();
+        if (p >= 0 && _paneCount > 1 && PaneItem(_panes[p]) >= 0 && _pick.Select(PaneItem(_panes[p]))) OnComparePick();
     }
 }

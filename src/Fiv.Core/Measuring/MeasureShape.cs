@@ -60,6 +60,24 @@ public readonly record struct MeasureShape(MeasureKind Kind, double X0, double Y
     public static MeasureShape Circle(double centreX, double centreY, double radius) =>
         new(MeasureKind.Circle, centreX, centreY, centreX + Math.Max(0, radius), centreY);
 
+    /// <summary>
+    /// The circle through three points of its outline. Its centre may lie off the grid: an arc
+    /// at the edge of a picture has it there. Null if the three points lie on a line, or two of
+    /// them in one place: no circle passes through them, or any does.
+    /// </summary>
+    public static MeasureShape? CircleThrough(double x1, double y1, double x2, double y2, double x3, double y3)
+    {
+        // Relative to the first point: the centre is where the perpendicular bisectors of the
+        // first point's lines to the other two meet.
+        double bx = x2 - x1, by = y2 - y1, cx = x3 - x1, cy = y3 - y1;
+        double d = 2 * (bx * cy - by * cx);
+        double b2 = bx * bx + by * by, c2 = cx * cx + cy * cy;
+        // A turn of less than a millionth between the two lines is no turn at all: the centre would be off in the millions.
+        if (Math.Abs(d) <= 1e-6 * Math.Sqrt(b2 * c2) || b2 == 0 || c2 == 0) return null;
+        double ux = (cy * b2 - by * c2) / d, uy = (bx * c2 - cx * b2) / d;
+        return Circle(x1 + ux, y1 + uy, Math.Sqrt(ux * ux + uy * uy));
+    }
+
     // ---------------------------------------------------------------- numbers
 
     public double Dx => X1 - X0;
@@ -307,10 +325,12 @@ public readonly record struct MeasureShape(MeasureKind Kind, double X0, double Y
         return this;
 
         // How far something that reaches from low to high may move within 0 .. size, of the move asked for.
+        // What is off the grid already (the centre of a circle through three points can be) may go
+        // back towards it, or along it, but no further off.
         static double Keep(double move, double low, double high, double size)
         {
             if (high - low > size) return 0; // larger than the grid: it stays where it is
-            return Math.Clamp(move, -low, size - high);
+            return Math.Clamp(move, Math.Min(-low, 0), Math.Max(size - high, 0));
         }
     }
 

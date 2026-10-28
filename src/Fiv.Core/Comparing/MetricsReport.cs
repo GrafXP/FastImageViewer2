@@ -4,7 +4,13 @@ using System.Text.Json;
 
 namespace Fiv.Comparing;
 
-/// <summary>The numbers of a comparison as text for other programs: one CSV row per channel, or one JSON object.</summary>
+/// <summary>The numbers of one image against another, and what they are of. <see cref="Threshold"/> is in the units of the result.</summary>
+public readonly record struct MetricsEntry(MetricsResult Result, string First, string Second, double Threshold);
+
+/// <summary>
+/// The numbers of a comparison as text for other programs: one CSV row per channel, or one JSON
+/// object; of several images compared with one, the rows of all in one table, or an array of objects.
+/// </summary>
 public static class MetricsReport
 {
     public static string UnitName(ValueUnit unit) => unit switch
@@ -20,10 +26,14 @@ public static class MetricsReport
     /// in every row, so that the rows of several reports can be put into one table.
     /// <paramref name="threshold"/> is in the units of the result.
     /// </summary>
-    public static string Csv(MetricsResult result, string first, string second, double threshold)
+    public static string Csv(MetricsResult result, string first, string second, double threshold) => Csv([new MetricsEntry(result, first, second, threshold)]);
+
+    /// <summary>One header row, then the rows of each entry in turn.</summary>
+    public static string Csv(IReadOnlyList<MetricsEntry> entries)
     {
         var sb = new StringBuilder();
         sb.Append("first,second,x,y,width,height,pixels,unit,peak,threshold,channel,mae,mse,rmse,psnr_db,max_error,mean_difference,over_threshold_percent,ssim\r\n");
+        foreach ((MetricsResult result, string first, string second, double threshold) in entries)
         foreach (ChannelMetrics channel in result.Channels)
         {
             sb.Append(Quote(first)).Append(',').Append(Quote(second)).Append(',');
@@ -42,45 +52,63 @@ public static class MetricsReport
     internal static string Quote(string text) => text.AsSpan().IndexOfAny(",\"\r\n") < 0 ? text : "\"" + text.Replace("\"", "\"\"") + "\"";
 
     /// <summary>One object: what was compared, and the numbers by channel. JSON has no infinity: the PSNR of identical images is null, and "identical" says why.</summary>
-    public static string Json(MetricsResult result, string first, string second, double threshold)
+    public static string Json(MetricsResult result, string first, string second, double threshold) => Json([new MetricsEntry(result, first, second, threshold)]);
+
+    /// <summary>One entry as the one object above; several as an array of such objects.</summary>
+    public static string Json(IReadOnlyList<MetricsEntry> entries)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
-            writer.WriteStartObject();
-            writer.WriteString("first", first);
-            writer.WriteString("second", second);
-            writer.WriteStartObject("area");
-            writer.WriteNumber("x", result.Area.X);
-            writer.WriteNumber("y", result.Area.Y);
-            writer.WriteNumber("width", result.Area.Width);
-            writer.WriteNumber("height", result.Area.Height);
-            writer.WriteEndObject();
-            writer.WriteNumber("pixels", result.Pixels);
-            if (result.Ignored > 0) writer.WriteNumber("ignoredPixels", result.Ignored);
-            writer.WriteString("unit", UnitName(result.Unit));
-            Write(writer, "peak", result.Peak);
-            Write(writer, "threshold", threshold);
-            writer.WriteBoolean("pixelAligned", result.PixelAligned);
-            writer.WriteBoolean("identical", result.Main is { MaxError: 0 });
-            writer.WriteStartObject("channels");
-            foreach (ChannelMetrics channel in result.Channels)
+            if (entries.Count == 1)
             {
-                writer.WriteStartObject(channel.Name);
-                Write(writer, "mae", channel.Mae);
-                Write(writer, "mse", channel.Mse);
-                Write(writer, "rmse", channel.Rmse);
-                Write(writer, "psnr", channel.Psnr);
-                Write(writer, "maxError", channel.MaxError);
-                Write(writer, "meanDifference", channel.MeanDifference);
-                Write(writer, "overThresholdPercent", 100 * channel.Histogram.FractionBeyond(threshold));
-                Write(writer, "ssim", channel.Ssim);
-                writer.WriteEndObject();
+                WriteObject(writer, entries[0]);
             }
-            writer.WriteEndObject();
-            writer.WriteEndObject();
+            else
+            {
+                writer.WriteStartArray();
+                foreach (MetricsEntry entry in entries) WriteObject(writer, entry);
+                writer.WriteEndArray();
+            }
         }
         return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+    }
+
+    static void WriteObject(Utf8JsonWriter writer, MetricsEntry entry)
+    {
+        (MetricsResult result, string first, string second, double threshold) = entry;
+        writer.WriteStartObject();
+        writer.WriteString("first", first);
+        writer.WriteString("second", second);
+        writer.WriteStartObject("area");
+        writer.WriteNumber("x", result.Area.X);
+        writer.WriteNumber("y", result.Area.Y);
+        writer.WriteNumber("width", result.Area.Width);
+        writer.WriteNumber("height", result.Area.Height);
+        writer.WriteEndObject();
+        writer.WriteNumber("pixels", result.Pixels);
+        if (result.Ignored > 0) writer.WriteNumber("ignoredPixels", result.Ignored);
+        writer.WriteString("unit", UnitName(result.Unit));
+        Write(writer, "peak", result.Peak);
+        Write(writer, "threshold", threshold);
+        writer.WriteBoolean("pixelAligned", result.PixelAligned);
+        writer.WriteBoolean("identical", result.Main is { MaxError: 0 });
+        writer.WriteStartObject("channels");
+        foreach (ChannelMetrics channel in result.Channels)
+        {
+            writer.WriteStartObject(channel.Name);
+            Write(writer, "mae", channel.Mae);
+            Write(writer, "mse", channel.Mse);
+            Write(writer, "rmse", channel.Rmse);
+            Write(writer, "psnr", channel.Psnr);
+            Write(writer, "maxError", channel.MaxError);
+            Write(writer, "meanDifference", channel.MeanDifference);
+            Write(writer, "overThresholdPercent", 100 * channel.Histogram.FractionBeyond(threshold));
+            Write(writer, "ssim", channel.Ssim);
+            writer.WriteEndObject();
+        }
+        writer.WriteEndObject();
+        writer.WriteEndObject();
     }
 
     static void Write(Utf8JsonWriter writer, string name, double value)

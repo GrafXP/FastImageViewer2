@@ -2,31 +2,37 @@ using Fiv.Imaging;
 
 namespace Fiv.Comparing;
 
-/// <summary>How the images of a compare set are put on screen.</summary>
+/// <summary>
+/// How the images of a compare set are put on screen. The modes that show several images at once
+/// take the shown ones (see <see cref="CompareSelection"/>), beginning with the reference.
+/// </summary>
 public enum CompareMode
 {
     /// <summary>One image at a time, switched in place.</summary>
     Single,
 
-    /// <summary>Two images, each in its own pane.</summary>
+    /// <summary>Each image in its own pane, all in one row, or in one column if that shows them larger.</summary>
     SideBySide,
 
-    /// <summary>All images, each in its own pane.</summary>
+    /// <summary>Each image in its own pane, in as many rows and columns as show them largest.</summary>
     Grid,
 
-    /// <summary>Two images in one pane, one on each side of a divider.</summary>
+    /// <summary>The images in one pane, each in a strip of its own between dividers.</summary>
     Split,
 
-    /// <summary>Two images in one pane, the second over the first with an opacity.</summary>
+    /// <summary>The images in one pane, each over those before it with an opacity of its own.</summary>
     Blend,
 
-    /// <summary>Two images in one pane, alternating in the cells of a checkerboard.</summary>
+    /// <summary>The images in one pane, each counting by an opacity of its own, in no order and against no reference (see <see cref="OverlayMix"/>).</summary>
+    Overlay,
+
+    /// <summary>The images in one pane, taking turns in the cells of a checkerboard.</summary>
     Checker,
 
-    /// <summary>The difference between two images, in the colours of a colour map.</summary>
+    /// <summary>For each image, its difference from the reference, in the colours of a colour map: a pane each.</summary>
     Difference,
 
-    /// <summary>The structural similarity of two images, pixel by pixel, as a heat map.</summary>
+    /// <summary>For each image, its structural similarity to the reference, pixel by pixel, as a heat map: a pane each.</summary>
     Ssim,
 }
 
@@ -35,8 +41,14 @@ public static class CompareModeExtensions
     /// <summary>The last of the modes, for going through them in turn.</summary>
     public const CompareMode Last = CompareMode.Ssim;
 
-    /// <summary>True for the modes that put two images into the same pane.</summary>
+    /// <summary>True for the modes that put images on top of each other: several in one pane, or two to be compared.</summary>
     public static bool IsOverlay(this CompareMode mode) => mode >= CompareMode.Split;
+
+    /// <summary>True for the modes that lay all the images shown into one pane.</summary>
+    public static bool IsStack(this CompareMode mode) => mode is CompareMode.Split or CompareMode.Blend or CompareMode.Overlay or CompareMode.Checker;
+
+    /// <summary>True for the modes with a pane for each image against the reference.</summary>
+    public static bool IsPairwise(this CompareMode mode) => mode is CompareMode.Difference or CompareMode.Ssim;
 
     /// <summary>True for the modes with a pane per image, where each pane can have its own zoom and position.</summary>
     public static bool HasPanes(this CompareMode mode) => mode is CompareMode.SideBySide or CompareMode.Grid;
@@ -97,6 +109,31 @@ public static class CompareGeometry
             }
         }
         return (bestColumns, (count + bestColumns - 1) / bestColumns);
+    }
+
+    /// <summary>
+    /// One row of <paramref name="count"/> panes, or one column of them, whichever shows the
+    /// canvas larger: the side-by-side view.
+    /// </summary>
+    public static (int Columns, int Rows) BestRow(int count, double areaWidth, double areaHeight, double canvasWidth, double canvasHeight, double gap)
+    {
+        if (count <= 1) return (1, 1);
+        if (canvasWidth <= 0 || canvasHeight <= 0) (canvasWidth, canvasHeight) = (3, 2);
+        double across = Math.Min((areaWidth - gap * (count - 1)) / count / canvasWidth, areaHeight / canvasHeight);
+        double down = Math.Min(areaWidth / canvasWidth, (areaHeight - gap * (count - 1)) / count / canvasHeight);
+        return down > across ? (1, count) : (count, 1);
+    }
+
+    /// <summary>
+    /// Which of <paramref name="layers"/> images a cell of the checkerboard shows. Two take turns
+    /// as black and white squares do; more go round so that no two cells next to each other, also
+    /// across a corner where there are four or more, show the same image. As combine.hlsl has it.
+    /// </summary>
+    public static int CheckerLayer(long cellX, long cellY, int layers)
+    {
+        if (layers <= 1) return 0;
+        long step = Math.Max(1, layers / 2);
+        return (int)(((cellX + cellY * step) % layers + layers) % layers);
     }
 
     /// <summary>

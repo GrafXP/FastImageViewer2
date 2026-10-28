@@ -11,33 +11,37 @@ namespace Fiv.App;
 // Comparing, third part: aligning. Every image of a set has a pose: how far it is moved, turned
 // and scaled from where its placement puts it on the canvas. The pose is part of the image's
 // transform to the canvas, so everything that goes through the canvas follows it: the panes,
-// the modes that combine two images, the linked cursor, the numbers and the saved files.
+// the modes that combine images, the linked cursor, the numbers and the saved files.
 //
-// What is aligned is the second image of the pair on show, to the first. By hand: in align
-// mode a drag moves the image instead of the view, and the arrow keys and their neighbours
-// nudge, turn and scale it. Automatically: Fiv.Comparing.Registration works out the pose on a
-// worker, from the full-resolution pixels, and it is taken over if it does not make the two
-// images less alike.
+// The images are aligned to the reference (see CompareSelection), and what is moved are the
+// images ticked to be moved, all but the reference unless some are unticked. By hand: in align
+// mode a drag moves them instead of the view, and the arrow keys and their neighbours nudge,
+// turn and scale them, all alike; the numbers in the panel set one image's pose. Automatically:
+// Fiv.Comparing.Registration works out each one's pose to the reference on a worker, one image
+// after the other, from the full-resolution pixels, and it is taken over if it does not make
+// the two images less alike.
 internal sealed unsafe partial class MainWindow
 {
-    /// <summary>What changed a pose last. Changes of one kind in a row are undone together.</summary>
+    /// <summary>What changed the poses last. Changes of one kind to the same images in a row are undone together.</summary>
     enum AlignAction { None, Nudge, Edit, Drag, Automatic, Reset }
 
     bool _alignMode;
     AlignModel _alignModel = AlignModel.ShiftRotationScale;
 
     bool _dragAlign;
-    bool _dragAlignTurns;            // the drag turns the image (Shift was held when it began) instead of moving it
-    AlignPose _alignDragStart;
+    bool _dragAlignTurns;            // the drag turns the images (Shift was held when it began) instead of moving them
+    readonly AlignPose[] _alignDragStarts = new AlignPose[MaxCompare]; // each image's pose when the drag began
+    int _alignDragLead;              // the image whose centre the turn of a drag is measured about
     double _alignDragX, _alignDragY; // how far the mouse has gone since the drag began, in screen pixels
-    double _alignDragTurn;           // how far it has gone round the image's centre since then, in degrees
+    double _alignDragTurn;           // how far it has gone round the lead image's centre since then, in degrees
 
-    CompareItem? _alignUndoItem;
-    AlignPose _alignUndoPose;
+    readonly List<(CompareItem Item, AlignPose Pose)> _alignUndo = []; // the poses before the last change
     AlignAction _alignLastAction;
 
-    int _alignJob;
-    bool _alignRunning;
+    // The automatic alignment: the images still to go, one at a time, and how it went so far.
+    readonly List<CompareItem> _alignQueue = [];
+    int _alignJob, _alignTotal, _alignImproved;
+    bool _alignRunning, _alignFine;
     CancellationTokenSource? _alignCancel;
     string? _alignReport; // what the last automatic alignment did, for the panel
 
@@ -52,20 +56,42 @@ internal sealed unsafe partial class MainWindow
     /// <summary>What a score is of: the two images' pixels, where they lie on the canvas, and the region.</summary>
     readonly record struct ScoreKey(DecodedImage First, DecodedImage Second, Affine2 FirstToCanvas, Affine2 SecondToCanvas, CanvasRect? Region);
 
-    double _alignScore = double.NaN;
-    ScoreKey _alignScoreKey;
-    bool _alignScoreKnown, _alignScoreRunning;
+    bool _alignScoreRunning;
 
     // The brightness of the compared images at reduced sizes, kept while they are in the set:
     // made once per image, some 10 ms and a third of the image's size in memory.
     readonly Dictionary<DecodedImage, LumaPyramid> _lumas = [];
 
-    /// <summary>The image that is aligned and the one it is aligned to: the second and the first of the pair on show.</summary>
-    bool TryGetAlignPair(out int reference, out int moving)
+    /// <summary>True if there is something to align to: the reference, with its size, on a canvas.</summary>
+    bool AlignReady() =>
+        Comparing && _canvasWidth > 0 && _pick.Reference < _compare.Count && _compare[_pick.Reference].Image is { HasSize: true };
+
+    bool HasSize(int item) => item >= 0 && item < _compare.Count && _compare[item].Image is { HasSize: true };
+
+    /// <summary>The images aligning moves now: those ticked, but the reference, whose size is known. Into <paramref name="items"/>; returns how many.</summary>
+    int MovingImages(Span<int> items)
     {
-        (reference, moving) = Comparing ? _pick.Pair : (-1, -1);
-        return reference != moving && reference >= 0 && moving >= 0 && reference < _compare.Count && moving < _compare.Count &&
-               _compare[reference].Image is { HasSize: true } && _compare[moving].Image is { HasSize: true } && _canvasWidth > 0;
+        if (!AlignReady()) return 0;
+        int n = 0;
+        for (int i = 0; i < _compare.Count; i++)
+            if (_pick.Moves(i) && HasSize(i)) items[n++] = i;
+        return n;
+    }
+
+    /// <summary>
+    /// The image whose pose the panel's numbers show and set, and which is saved aligned: the
+    /// active one unless it is the reference, otherwise the first one that moves, or any; -1 if none.
+    /// </summary>
+    int AlignTarget()
+    {
+        if (!AlignReady()) return -1;
+        int active = _pick.Active, reference = _pick.Reference;
+        if (active != reference && HasSize(active)) return active;
+        Span<int> items = stackalloc int[MaxCompare];
+        if (MovingImages(items) > 0) return items[0];
+        for (int i = 0; i < _compare.Count; i++)
+            if (i != reference && HasSize(i)) return i;
+        return -1;
     }
 
     void SetAlignMode(bool on)
@@ -74,27 +100,43 @@ internal sealed unsafe partial class MainWindow
         _alignMode = on;
         _dragAlign = false;
         if (!on) _alignRegionArmed = false; // the region itself stays: Shift+A goes by it with the panel closed too, and it is drawn
-        if (on && TryGetAlignPair(out int reference, out int moving))
-            Notice($"Aligning image {moving + 1} to image {reference + 1}: drag it (with Shift: turn it), nudge it with the arrow keys, or press Shift+A.");
+        Span<int> items = stackalloc int[MaxCompare];
+        int n = on ? MovingImages(items) : 0;
+        if (n == 1) Notice($"Aligning image {items[0] + 1} to image {_pick.Reference + 1}: drag it (with Shift: turn it), nudge it with the arrow keys, or press Shift+A.");
+        else if (n > 1) Notice($"Aligning {n} images to image {_pick.Reference + 1}: drag them (with Shift: turn them), nudge them with the arrow keys, or press Shift+A. The panel says which move.");
     }
 
     /// <summary>Forgets everything about aligning: the comparison ended or another began. The poses go with the set.</summary>
     void ResetAlign()
     {
-        _alignCancel?.Cancel();
-        _alignCancel = null;
-        _alignJob++;
-        _alignRunning = false;
+        CancelAutoAlign();
         _alignMode = _dragAlign = false;
         _alignReport = null;
-        _alignScore = double.NaN;
-        _alignScoreKnown = false;
-        _alignUndoItem = null;
+        _alignUndo.Clear();
         _alignLastAction = AlignAction.None;
         _alignRegion = null;
         _alignRegionArmed = false;
         foreach (LumaPyramid luma in _lumas.Values) luma.Dispose();
         _lumas.Clear();
+    }
+
+    /// <summary>Stops the automatic alignment and what is still to go of it; what the worker finds is not taken over.</summary>
+    void CancelAutoAlign()
+    {
+        _alignCancel?.Cancel();
+        _alignCancel = null;
+        _alignJob++;
+        _alignRunning = false;
+        _alignQueue.Clear();
+    }
+
+    /// <summary>The same while the comparison goes on: the images that were waiting or under way say nothing any more, and the panel says why.</summary>
+    void StopAutoAlign(string report)
+    {
+        CancelAutoAlign();
+        foreach (CompareItem item in _compare)
+            if (item.AlignReport?.EndsWith("...") == true) item.AlignReport = null;
+        _alignReport = report;
     }
 
     // ---------------------------------------------------------------- the pose
@@ -110,60 +152,82 @@ internal sealed unsafe partial class MainWindow
         static double Whole(double value, double per) => double.IsFinite(value) ? Math.Round(value * per) / per + 0.0 : 0;
     }
 
-    /// <summary>Gives an image of the set a pose, and remembers the one it had for "undo" unless this change continues the last one.</summary>
+    /// <summary>Remembers the poses of these images for "undo", unless this change continues the last one: of the same kind, to the same images.</summary>
+    void BeginChange(ReadOnlySpan<int> items, AlignAction action)
+    {
+        bool same = action == _alignLastAction && _alignUndo.Count == items.Length;
+        for (int k = 0; same && k < items.Length; k++) same = _alignUndo[k].Item == _compare[items[k]];
+        _alignLastAction = action;
+        if (same) return;
+        _alignUndo.Clear();
+        foreach (int item in items) _alignUndo.Add((_compare[item], _compare[item].Pose));
+    }
+
+    /// <summary>Gives images of the set new poses, as one change.</summary>
+    void SetPoses(ReadOnlySpan<int> items, Func<int, AlignPose, AlignPose> change, AlignAction action)
+    {
+        if (items.IsEmpty) return;
+        BeginChange(items, action);
+        foreach (int item in items)
+        {
+            CompareItem entry = _compare[item];
+            AlignPose pose = Tidy(change(item, entry.Pose));
+            if (pose == entry.Pose) continue;
+            entry.Pose = pose;
+            if (action != AlignAction.Automatic) entry.AlignReport = null; // what its last automatic alignment said is no longer about this pose
+        }
+        Invalidate();
+    }
+
+    /// <summary>Gives one image of the set a pose.</summary>
     void SetPose(int item, AlignPose pose, AlignAction action)
     {
-        CompareItem entry = _compare[item];
-        pose = Tidy(pose);
-        if (pose == entry.Pose) return;
-        if (action != _alignLastAction || _alignUndoItem != entry)
+        if (Tidy(pose) == _compare[item].Pose) return;
+        SetPoses([item], (_, _) => pose, action);
+    }
+
+    /// <summary>Changes the pose of every image aligning moves alike, as one change. Says so if there is none.</summary>
+    void ChangeMoving(Func<int, AlignPose, AlignPose> change, AlignAction action)
+    {
+        Span<int> items = stackalloc int[MaxCompare];
+        int n = MovingImages(items);
+        if (n == 0)
         {
-            _alignUndoItem = entry;
-            _alignUndoPose = entry.Pose;
+            if (AlignReady()) Notice("No image is ticked to be moved: tick one in the align panel.");
+            return;
         }
-        _alignLastAction = action;
-        entry.Pose = pose;
-        if (action != AlignAction.Automatic) _alignReport = null; // what the last automatic alignment said is no longer about this pose
-        Invalidate();
+        SetPoses(items[..n], change, action);
     }
 
-    void Nudge(double dx, double dy)
-    {
-        if (!TryGetAlignPair(out _, out int moving)) return;
-        AlignPose pose = _compare[moving].Pose;
-        SetPose(moving, pose.With(dx: pose.Dx + dx, dy: pose.Dy + dy), AlignAction.Nudge);
-    }
+    void Nudge(double dx, double dy) => ChangeMoving((_, pose) => pose.With(dx: pose.Dx + dx, dy: pose.Dy + dy), AlignAction.Nudge);
 
-    void Turn(double degrees)
-    {
-        if (!TryGetAlignPair(out _, out int moving)) return;
-        AlignPose pose = _compare[moving].Pose;
-        SetPose(moving, pose.With(rotation: pose.Rotation + degrees), AlignAction.Nudge);
-    }
+    void Turn(double degrees) => ChangeMoving((_, pose) => pose.With(rotation: pose.Rotation + degrees), AlignAction.Nudge);
 
-    /// <summary>Makes the image larger or smaller by a fraction of its original size.</summary>
-    void Rescale(double by)
-    {
-        if (!TryGetAlignPair(out _, out int moving)) return;
-        AlignPose pose = _compare[moving].Pose;
-        SetPose(moving, pose.With(scale: pose.Scale + by), AlignAction.Nudge);
-    }
+    /// <summary>Makes the images larger or smaller by a fraction of their original size.</summary>
+    void Rescale(double by) => ChangeMoving((_, pose) => pose.With(scale: pose.Scale + by), AlignAction.Nudge);
 
+    /// <summary>The images that move back to where they were before any aligning.</summary>
     void ResetPose()
     {
-        if (!TryGetAlignPair(out _, out int moving)) return;
         _alignLastAction = AlignAction.None;
-        SetPose(moving, AlignPose.Identity, AlignAction.Reset);
+        ChangeMoving((_, _) => AlignPose.Identity, AlignAction.Reset);
     }
 
-    /// <summary>Back to the pose before the last change, and, pressed again, forward to it.</summary>
+    /// <summary>Back to the poses before the last change, and, pressed again, forward to them.</summary>
     void UndoPose()
     {
-        if (_alignUndoItem is not { } entry || !_compare.Contains(entry)) return;
-        (entry.Pose, _alignUndoPose) = (_alignUndoPose, entry.Pose);
+        for (int k = 0; k < _alignUndo.Count; k++)
+        {
+            (CompareItem entry, AlignPose pose) = _alignUndo[k];
+            if (!_compare.Contains(entry)) continue;
+            _alignUndo[k] = (entry, entry.Pose);
+            entry.Pose = pose;
+        }
         _alignLastAction = AlignAction.None;
         Invalidate();
     }
+
+    bool CanUndoPose() => _alignUndo.Exists(undo => _compare.Contains(undo.Item));
 
     /// <summary>Writes "x 23.6  y -14.2  0.75°  100.4 %" (turn and size only if there are any) into <paramref name="to"/>; returns the bytes written.</summary>
     static int WritePose(AlignPose pose, Span<byte> to)
@@ -229,51 +293,58 @@ internal sealed unsafe partial class MainWindow
     }
 
     /// <summary>
-    /// The left button went down over a pane while aligning: the drag moves the image, or with
-    /// <paramref name="turn"/> (Shift held) turns it about its centre. False if there is nothing to move.
+    /// The left button went down over a pane while aligning: the drag moves the images that
+    /// move, or with <paramref name="turn"/> (Shift held) turns each about its centre. False if there is nothing to move.
     /// </summary>
     bool BeginAlignDrag(bool turn)
     {
-        if (!TryGetAlignPair(out _, out int moving)) return false;
+        Span<int> items = stackalloc int[MaxCompare];
+        int n = MovingImages(items);
+        if (n == 0) return false;
         _dragAlign = true;
         _dragAlignTurns = turn;
-        _alignDragStart = _compare[moving].Pose;
+        for (int i = 0; i < _compare.Count; i++) _alignDragStarts[i] = _compare[i].Pose;
+        // The turn is measured about the centre of the image the user is at, if it moves; of the first that moves otherwise.
+        _alignDragLead = items[..n].Contains(_pick.Active) ? _pick.Active : items[0];
         _alignDragX = _alignDragY = _alignDragTurn = 0;
         _alignLastAction = AlignAction.None; // each drag can be undone on its own
         return true;
     }
 
-    /// <summary>The mouse, at (<paramref name="x"/>, <paramref name="y"/>) now, went this far in a drag that moves or turns the image.</summary>
+    /// <summary>The mouse, at (<paramref name="x"/>, <paramref name="y"/>) now, went this far in a drag that moves or turns the images.</summary>
     void AlignDrag(int x, int y, int dx, int dy)
     {
-        if (!TryGetAlignPair(out _, out int moving)) return;
+        Span<int> items = stackalloc int[MaxCompare];
+        int n = MovingImages(items);
+        if (n == 0) return;
         if (_dragAlignTurns)
         {
-            // The image goes round its centre by the angle the mouse goes round it: what was
-            // grabbed stays under the mouse, and the further out it is grabbed, the finer the turn.
-            if (!TryGetAlignCentreOnScreen(moving, out double centreX, out double centreY)) return;
+            // Each image goes round its centre by the angle the mouse goes round the lead image's:
+            // what was grabbed stays under the mouse, and the further out it is grabbed, the finer the turn.
+            if (!TryGetAlignCentreOnScreen(_alignDragLead, out double centreX, out double centreY)) return;
             double fromX = x - dx - centreX, fromY = y - dy - centreY, toX = x - centreX, toY = y - centreY;
             if (fromX * fromX + fromY * fromY < 64 || toX * toX + toY * toY < 64) return; // at the centre itself there is no angle to speak of
             // Screen coordinates have y pointing down, so this angle is positive clockwise, as the pose's turn is.
             _alignDragTurn += Math.Atan2(fromX * toY - fromY * toX, fromX * toX + fromY * toY) * (180 / Math.PI);
-            SetPose(moving, _alignDragStart.With(rotation: _alignDragStart.Rotation + _alignDragTurn), AlignAction.Drag);
+            double turn = _alignDragTurn;
+            SetPoses(items[..n], (item, _) => _alignDragStarts[item].With(rotation: _alignDragStarts[item].Rotation + turn), AlignAction.Drag);
             return;
         }
         _alignDragX += dx;
         _alignDragY += dy;
         double zoom = ViewOf(_dragItem).Zoom, moveX = _alignDragX / zoom, moveY = _alignDragY / zoom;
-        // Zoomed out, a screen pixel is several image pixels: the image moves by whole pixels,
-        // and what it was moved by a fraction before stays. Fractions are for when one can see them.
+        // Zoomed out, a screen pixel is several image pixels: the images move by whole pixels,
+        // and what they were moved by a fraction before stays. Fractions are for when one can see them.
         if (zoom <= 1)
         {
             moveX = Math.Round(moveX);
             moveY = Math.Round(moveY);
         }
-        SetPose(moving, _alignDragStart.With(dx: _alignDragStart.Dx + moveX, dy: _alignDragStart.Dy + moveY), AlignAction.Drag);
+        SetPoses(items[..n], (item, _) => _alignDragStarts[item].With(dx: _alignDragStarts[item].Dx + moveX, dy: _alignDragStarts[item].Dy + moveY), AlignAction.Drag);
     }
 
     /// <summary>
-    /// Where the centre of the image being aligned is in the window, in the pane the drag is in:
+    /// Where the centre of an image being aligned is in the window, in the pane the drag is in:
     /// the point it turns about. The canvas is the same in every pane, so any pane will do.
     /// </summary>
     bool TryGetAlignCentreOnScreen(int moving, out double x, out double y)
@@ -282,16 +353,16 @@ internal sealed unsafe partial class MainWindow
         int pane = -1;
         for (int p = 0; p < _paneCount && pane < 0; p++)
             if (_panes[p].First == _dragItem) pane = p;
-        if (pane < 0 || _compare[moving].Image is not { HasSize: true } image) return false;
-        (double centreX, double centreY) = PoseCentre(image);
+        if (pane < 0 || !HasSize(moving)) return false;
+        (double centreX, double centreY) = PoseCentre(_compare[moving].Image!);
         AlignPose pose = _compare[moving].Pose;
         (x, y) = CanvasToScreen(_dragItem, _panes[pane].Rect).Apply(centreX + pose.Dx, centreY + pose.Dy);
         return true;
     }
 
     /// <summary>
-    /// The wheel while aligning: with Shift it turns the image, as a drag with Shift does (a
-    /// tenth of a degree a notch, with Ctrl as well a hundredth); with Ctrl alone it scales it.
+    /// The wheel while aligning: with Shift it turns the images, as a drag with Shift does (a
+    /// tenth of a degree a notch, with Ctrl as well a hundredth); with Ctrl alone it scales them.
     /// False if it is the view's.
     /// </summary>
     bool AlignWheel(int delta, bool control, bool shift)
@@ -305,7 +376,7 @@ internal sealed unsafe partial class MainWindow
 
     // ---------------------------------------------------------------- the worker's share
 
-    /// <summary>What a worker needs of the pair, held so that nothing of it goes away under it.</summary>
+    /// <summary>What a worker needs of a pair, held so that nothing of it goes away under it.</summary>
     sealed class AlignWork
     {
         public required DecodedImage First, Second;
@@ -321,11 +392,11 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
-    /// <summary>Takes hold of the pair's pixels and of what is cached for them. False if they are not both loaded in full.</summary>
-    bool TryBeginAlignWork(out AlignWork work, out int moving)
+    /// <summary>Takes hold of the pixels of an image and the reference, and of what is cached for them. False if they are not both loaded in full.</summary>
+    bool TryBeginAlignWork(int reference, int moving, out AlignWork work)
     {
         work = null!;
-        if (!TryGetAlignPair(out int reference, out moving)) return false;
+        if (!HasSize(reference) || !HasSize(moving) || reference == moving) return false;
         LoadedImage first = _compare[reference].Image!, second = _compare[moving].Image!;
         if (first.Full is not { } a || second.Full is not { } b) return false;
         a.AddReference();
@@ -381,19 +452,44 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
-    // ---------------------------------------------------------------- how alike, as the pose is now
+    // ---------------------------------------------------------------- how alike, as the poses are now
 
-    /// <summary>Starts the score for the pair as it lies now, if the panel is open and it is neither there nor on its way. Cheap; called every frame.</summary>
+    /// <summary>The key of an image's score against the reference as the two lie now; false if either is not loaded in full.</summary>
+    bool TryScoreKey(int reference, int item, out ScoreKey key)
+    {
+        key = default;
+        if (!HasSize(reference) || !HasSize(item) || _compare[reference].Image!.Full is not { } a || _compare[item].Image!.Full is not { } b) return false;
+        key = new ScoreKey(a, b, ImageToCanvas(reference), ImageToCanvas(item), _alignRegion);
+        return true;
+    }
+
+    /// <summary>
+    /// Starts the score of an image against the reference as it lies now, if the panel is open
+    /// and it is neither there nor on its way: the one whose numbers the panel shows first, then
+    /// the others, one at a time. Cheap; called every frame.
+    /// </summary>
     void UpdateAlignScore()
     {
-        if (!_alignMode || _alignScoreRunning || _alignRunning) return;
-        if (!TryGetAlignPair(out int reference, out int moving)) return;
-        if (_compare[reference].Image!.Full is not { } a || _compare[moving].Image!.Full is not { } b) return;
-        if (_dragRegion && _dragRegionForAlign) return; // the region is being drawn: the score follows when it is there
-        var key = new ScoreKey(a, b, ImageToCanvas(reference), ImageToCanvas(moving), _alignRegion);
-        if (_alignScoreKnown && key == _alignScoreKey) return;
+        if (!_alignMode || _alignScoreRunning || _alignRunning || !AlignReady()) return;
+        if (_dragRegion && _dragRegionForAlign) return; // the region is being drawn: the scores follow when it is there
+        int reference = _pick.Reference, target = AlignTarget();
+        for (int k = -1; k < _compare.Count; k++)
+        {
+            int item = k < 0 ? target : k;
+            if (item < 0 || item == reference || (k >= 0 && item == target)) continue;
+            if (!TryScoreKey(reference, item, out ScoreKey key)) continue;
+            CompareItem entry = _compare[item];
+            if (entry.ScoreKnown && entry.ScoreKey == key) continue;
+            StartScore(reference, item, key);
+            return;
+        }
+    }
+
+    void StartScore(int reference, int item, ScoreKey key)
+    {
         PruneLumas();
-        if (!TryBeginAlignWork(out AlignWork work, out _)) return;
+        if (!TryBeginAlignWork(reference, item, out AlignWork work)) return;
+        CompareItem entry = _compare[item];
         _alignScoreRunning = true;
         Task.Run(() =>
         {
@@ -411,72 +507,121 @@ internal sealed unsafe partial class MainWindow
             {
                 EndAlignWork(work);
                 _alignScoreRunning = false;
-                _alignScore = score;
-                _alignScoreKey = key;
-                _alignScoreKnown = true;
+                entry.Score = score;
+                entry.ScoreKey = key;
+                entry.ScoreKnown = true;
             });
         });
+    }
+
+    /// <summary>How alike an image is to the reference as the two lie now: NaN if they do not overlap or one is flat; null if it is not known yet.</summary>
+    double? CurrentScore(int reference, int item)
+    {
+        CompareItem entry = _compare[item];
+        return entry.ScoreKnown && TryScoreKey(reference, item, out ScoreKey key) && entry.ScoreKey == key ? entry.Score : null;
     }
 
     // ---------------------------------------------------------------- automatic alignment
 
     /// <summary>
-    /// Works out the pose of the second image of the pair: from scratch, or with
-    /// <paramref name="fine"/> from the pose it has. The result arrives in <see cref="OnAligned"/>.
+    /// Works out the pose of every image that moves, to the reference, one after the other:
+    /// from scratch, or with <paramref name="fine"/> from the pose each has. The results arrive in <see cref="OnAligned"/>.
     /// </summary>
     void AutoAlign(bool fine)
     {
-        if (!TryGetAlignPair(out _, out _))
+        Span<int> items = stackalloc int[MaxCompare];
+        int n = MovingImages(items);
+        if (n == 0)
         {
-            Notice("Aligning takes two images on show.");
+            Notice(!AlignReady() ? "Aligning takes two images on show." : "No image is ticked to be moved: tick the ones to align in the align panel (A).");
             return;
         }
-        PruneLumas();
-        if (!TryBeginAlignWork(out AlignWork work, out int moving))
+        int reference = _pick.Reference;
+        bool loaded = _compare[reference].Image!.Full != null;
+        foreach (int item in items[..n]) loaded &= _compare[item].Image!.Full != null;
+        if (!loaded)
         {
-            Notice("Both images have to be loaded in full first.");
+            Notice(n == 1 ? "Both images have to be loaded in full first." : "The images have to be loaded in full first.");
             return;
         }
-        _alignCancel?.Cancel();
-        var cancel = _alignCancel = new CancellationTokenSource();
-        int job = ++_alignJob;
+        CancelAutoAlign();
+        _alignCancel = new CancellationTokenSource();
         _alignRunning = true;
-        _alignReport = fine ? "Refining..." : "Aligning...";
-        CompareItem entry = _compare[moving];
-        AlignPose start = entry.Pose;
-        AlignModel model = _alignModel;
-        CanvasRect? region = _alignRegion;
-        Task.Run(() =>
+        _alignFine = fine;
+        _alignTotal = n;
+        _alignImproved = 0;
+        foreach (int item in items[..n])
         {
-            AlignResult? result = null;
-            string? error = null;
-            try
+            _alignQueue.Add(_compare[item]);
+            _compare[item].AlignReport = "Waiting...";
+        }
+        AlignNext(_alignJob);
+    }
+
+    /// <summary>Starts the next image of the automatic alignment, or, with none left, says how it went.</summary>
+    void AlignNext(int job)
+    {
+        int reference = _pick.Reference;
+        while (_alignQueue.Count > 0)
+        {
+            CompareItem entry = _alignQueue[0];
+            _alignQueue.RemoveAt(0);
+            int moving = _compare.IndexOf(entry);
+            if (moving < 0 || moving == reference) continue; // it left the set
+            PruneLumas();
+            if (!TryBeginAlignWork(reference, moving, out AlignWork work))
             {
-                work.Prepare();
-                result = Registration.Align(new AlignInput(work.FirstLuma!, work.FirstToCanvas), new AlignInput(work.SecondLuma!, work.SecondPlaced), start, model, fine, cancel.Token, region);
+                entry.AlignReport = "Not loaded in full: not aligned.";
+                continue;
             }
-            catch (Exception e)
+            bool fine = _alignFine;
+            CancellationToken cancel = _alignCancel!.Token;
+            AlignPose start = entry.Pose;
+            AlignModel model = _alignModel;
+            CanvasRect? region = _alignRegion;
+            entry.AlignReport = fine ? "Refining..." : "Aligning...";
+            int done = _alignTotal - _alignQueue.Count - 1;
+            _alignReport = _alignTotal > 1 ? $"{(fine ? "Refining" : "Aligning")} {done + 1} of {_alignTotal}..." : entry.AlignReport;
+            Task.Run(() =>
             {
-                CrashLog.Write(e);
-                error = e is AggregateException { InnerException: { } inner } ? inner.Message : e.Message;
-            }
-            RunOnUi(() => OnAligned(job, work, entry, start, result, error, fine, model, region));
-        });
+                AlignResult? result = null;
+                string? error = null;
+                try
+                {
+                    work.Prepare();
+                    result = Registration.Align(new AlignInput(work.FirstLuma!, work.FirstToCanvas), new AlignInput(work.SecondLuma!, work.SecondPlaced), start, model, fine, cancel, region);
+                }
+                catch (Exception e)
+                {
+                    CrashLog.Write(e);
+                    error = e is AggregateException { InnerException: { } inner } ? inner.Message : e.Message;
+                }
+                RunOnUi(() => OnAligned(job, work, entry, start, result, error, fine, model, region));
+            });
+            return;
+        }
+        // All done.
+        _alignRunning = false;
+        if (_alignTotal > 1)
+        {
+            _alignReport = $"{_alignImproved} of {_alignTotal} images {(_alignFine ? "refined" : "aligned")} to image {reference + 1}; how alike each is now, the table says.";
+            Notice(_alignReport);
+        }
     }
 
     /// <summary>
     /// A worker has a pose. It is taken over unless it makes the two images less alike than they
-    /// were: in the region the alignment went by, if there was one. UI thread.
+    /// were: in the region the alignment went by, if there was one. Then the next image. UI thread.
     /// </summary>
     void OnAligned(int job, AlignWork work, CompareItem entry, AlignPose start, AlignResult? result, string? error, bool fine, AlignModel model, CanvasRect? region)
     {
         EndAlignWork(work);
-        if (job != _alignJob) return; // of a comparison that has ended, or overtaken by another run
-        _alignRunning = false;
+        if (job != _alignJob) return; // of a comparison that has ended, of another reference, or overtaken by another run
         int item = _compare.IndexOf(entry);
-        if (error != null) _alignReport = "The alignment failed: " + error;
-        else if (result == null || item < 0) _alignReport = null; // cancelled, or the image has left the set
-        else if (entry.Pose != start) _alignReport = "The image was moved while its alignment was worked out: left as it is.";
+        string? report;
+        if (error != null) report = "The alignment failed: " + error;
+        else if (result == null || item < 0) report = null; // cancelled, or the image has left the set
+        else if (entry.Pose != start) report = "The image was moved while its alignment was worked out: left as it is.";
         else
         {
             bool better = result.Found && !double.IsNaN(result.ScoreAfter) && !(result.ScoreAfter < result.ScoreBefore - 0.0005);
@@ -484,25 +629,31 @@ internal sealed unsafe partial class MainWindow
             string where = region != null ? " in the region" : "", by = region != null ? " by the region" : "";
             if (!better)
             {
-                _alignReport = double.IsNaN(result.ScoreAfter) || !result.Found
+                report = double.IsNaN(result.ScoreAfter) || !result.Found
                     ? region != null ? "No alignment found: the region is too small, or the two images have too little in common there."
                                      : "No alignment found: the two images have too little in common."
                     : $"No better alignment found: alike{where} {result.ScoreBefore:0.0000} as it is, {result.ScoreAfter:0.0000} at best.";
             }
             else if (Tidy(result.Pose) == start)
             {
-                _alignReport = $"Nothing to improve: alike{where} {result.ScoreAfter:0.0000} ({result.Milliseconds:0} ms).";
+                report = $"Nothing to improve: alike{where} {result.ScoreAfter:0.0000} ({result.Milliseconds:0} ms).";
             }
             else
             {
                 _alignLastAction = AlignAction.None;
                 SetPose(item, result.Pose, AlignAction.Automatic);
-                _alignReport = double.IsNaN(result.ScoreBefore)
+                _alignImproved++;
+                report = double.IsNaN(result.ScoreBefore)
                     ? $"Aligned{by} in {result.Milliseconds:0} ms: alike{where} {result.ScoreAfter:0.0000}."
                     : $"Aligned{by} in {result.Milliseconds:0} ms: alike{where} {result.ScoreBefore:0.0000} before, {result.ScoreAfter:0.0000} after.";
             }
         }
-        if (_alignReport != null) Notice(_alignReport);
+        entry.AlignReport = report;
+        if (_alignTotal == 1)
+        {
+            _alignReport = report;
+            if (report != null) Notice(report);
+        }
         if (result != null && _options.PerfLog != null)
         {
             try
@@ -511,12 +662,13 @@ internal sealed unsafe partial class MainWindow
                 File.AppendAllText(_options.PerfLog,
                     $"align fine={(fine ? 1 : 0)} model={model} ms={result.Milliseconds:F1} found={(result.Found ? 1 : 0)} patches={result.Patches} " +
                     $"before={result.ScoreBefore:F5} after={result.ScoreAfter:F5} dx={pose.Dx:F3} dy={pose.Dy:F3} rotation={pose.Rotation:F4} scale={pose.Scale:F6} " +
-                    $"region={(region is { } r ? $"{r.X},{r.Y},{r.Width},{r.Height}" : "none")} at={Stopwatch.GetTimestamp()}\n");
+                    $"region={(region is { } r ? $"{r.X},{r.Y},{r.Width},{r.Height}" : "none")} item={item + 1} at={Stopwatch.GetTimestamp()}\n");
             }
             catch (IOException)
             {
             }
         }
+        AlignNext(job);
     }
 
     // ---------------------------------------------------------------- the panel
@@ -524,7 +676,7 @@ internal sealed unsafe partial class MainWindow
     void DrawAlignPanel()
     {
         float scale = (float)_dpiScale;
-        // Top right, under the second image's name: it is that image the panel moves.
+        // Top right, under the name of the image on the right: it is the images there the panel moves.
         ImGui.SetNextWindowPos(new Vector2(ViewX + ViewWidth - 10 * scale, ViewY + 64 * scale), ImGuiCond.FirstUseEver, new Vector2(1, 0));
         bool open = true;
         if (!ImGui.Begin("Align"u8, ref open, ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoFocusOnAppearing | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoNav))
@@ -534,18 +686,23 @@ internal sealed unsafe partial class MainWindow
             return;
         }
         if (!open) _deferred = () => SetAlignMode(false);
-        if (!TryGetAlignPair(out int reference, out int moving))
+        int reference = _pick.Reference, target = AlignTarget();
+        if (target < 0)
         {
             ImGui.TextDisabled("Aligning takes two images on show."u8);
             ImGui.End();
             return;
         }
-        if (Utf8.TryWrite(_utf8, $"{moving + 1}  {Path.GetFileName(_compare[moving].Path.AsSpan())}   is laid on   {reference + 1}  {Path.GetFileName(_compare[reference].Path.AsSpan())}", out int n)) Put(n);
-        ImGui.TextDisabled("Drag the image to move it, drag with Shift to turn it about its centre."u8);
-        ImGui.TextDisabled("Arrows 1 pixel, PgUp / PgDn 0.1 degrees, Home / End 0.1 %; with Shift a tenth."u8);
+        int n;
+        if (Utf8.TryWrite(_utf8, $"Laid on   {reference + 1}  {Path.GetFileName(_compare[reference].Path.AsSpan())}, the reference (X: the next image is)", out n)) Put(n);
+        ImGui.TextDisabled("Drag to move the ticked images, drag with Shift to turn each about its centre."u8);
+        ImGui.TextDisabled("Arrows 1 pixel, PgUp / PgDn 0.1 degrees, Home / End 0.1 %%; with Shift a tenth."u8); // a format: %% is one %
         ImGui.TextDisabled("Shift+wheel turns, Ctrl+wheel scales."u8);
+        DrawAlignImages(reference, target);
 
-        AlignPose pose = _compare[moving].Pose;
+        // The numbers of one image: the one clicked in the table.
+        AlignPose pose = _compare[target].Pose;
+        if (Utf8.TryWrite(_utf8, $"{target + 1}  {Path.GetFileName(_compare[target].Path.AsSpan())}{(_pick.Moves(target) ? "" : "   (not ticked: drags and keys leave it)")}", out n)) Put(n);
         double x = pose.Dx, y = pose.Dy, turn = pose.Rotation, percent = pose.Scale * 100;
         ImGui.PushItemWidth(150 * scale);
         bool edited = ImGui.InputDouble("x"u8, ref x, 1, 10, "%.3f"u8);
@@ -555,18 +712,22 @@ internal sealed unsafe partial class MainWindow
         ImGui.SameLine();
         edited |= ImGui.InputDouble("size, %"u8, ref percent, 0.1, 1, "%.4f"u8);
         ImGui.PopItemWidth();
-        if (edited) SetPose(moving, new AlignPose(x, y, turn, percent / 100), AlignAction.Edit);
+        if (edited) SetPose(target, new AlignPose(x, y, turn, percent / 100), AlignAction.Edit);
 
-        ImGui.BeginDisabled(pose.IsIdentity);
-        if (ImGui.Button("Reset (Backspace)"u8)) ResetPose();
+        Span<int> items = stackalloc int[MaxCompare];
+        bool anyMoved = false;
+        int moving = MovingImages(items);
+        foreach (int item in items[..moving]) anyMoved |= !_compare[item].Pose.IsIdentity;
+        ImGui.BeginDisabled(!anyMoved);
+        if (ImGui.Button(moving > 1 ? "Reset the ticked images (Backspace)"u8 : "Reset (Backspace)"u8)) ResetPose();
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.BeginDisabled(_alignUndoItem == null || !_compare.Contains(_alignUndoItem));
+        ImGui.BeginDisabled(!CanUndoPose());
         if (ImGui.Button("Undo the last change"u8)) UndoPose();
         ImGui.EndDisabled();
 
         ImGui.Separator();
-        ImGui.TextDisabled("Automatically, the image may be"u8);
+        ImGui.TextDisabled("Automatically, the ticked images may be"u8);
         ImGui.SameLine();
         if (ImGui.RadioButton("moved"u8, _alignModel == AlignModel.Shift)) _alignModel = AlignModel.Shift;
         ImGui.SameLine();
@@ -593,11 +754,16 @@ internal sealed unsafe partial class MainWindow
                 _alignReport = null; // what the last alignment said was about the region
             }
         }
-        ImGui.BeginDisabled(_alignRunning);
+        ImGui.BeginDisabled(_alignRunning || moving == 0);
         if (ImGui.Button("Align (Shift+A)"u8)) _deferred = () => AutoAlign(fine: false);
         ImGui.SameLine();
         if (ImGui.Button("Fine align from here (Q)"u8)) _deferred = () => AutoAlign(fine: true);
         ImGui.EndDisabled();
+        if (_alignRunning)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Stop"u8)) StopAutoAlign("Stopped.");
+        }
         if (_alignReport != null)
         {
             Utf8Of(_alignReport);
@@ -605,38 +771,123 @@ internal sealed unsafe partial class MainWindow
         }
 
         ImGui.Separator();
-        // How alike the two are as they lie now: it follows every change, which is what tells a better pose from a worse one.
-        bool current = _alignScoreKnown && _compare[reference].Image!.Full is { } a && _compare[moving].Image!.Full is { } b &&
-                       _alignScoreKey == new ScoreKey(a, b, ImageToCanvas(reference), ImageToCanvas(moving), _alignRegion);
-        if (current && !double.IsNaN(_alignScore))
+        if (Utf8.TryWrite(_utf8, $"Save image {target + 1} aligned... (Ctrl+E)", out n))
         {
-            if (_alignRegion != null ? Utf8.TryWrite(_utf8, $"Alike in the region: {_alignScore:0.0000}", out n) : Utf8.TryWrite(_utf8, $"Alike: {_alignScore:0.0000}", out n)) Put(n);
+            _utf8[n] = 0;
+            fixed (byte* label = _utf8)
+                if (ImGui.Button(label)) _deferred = SaveAligned;
         }
-        else
-        {
-            ImGui.TextUnformatted(current ? "Alike: -   (the two do not overlap there, or one is flat)"u8 : "Alike: ..."u8);
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("correlation of brightness at reduced size; 1: the same picture"u8);
-        if (ImGui.Button("Save the aligned image... (Ctrl+E)"u8)) _deferred = SaveAligned;
         ImGui.End();
+    }
+
+    /// <summary>
+    /// Every image but the reference, a row each: whether aligning moves it, its pose, how alike it
+    /// is to the reference as it lies, and what its last automatic alignment said. A click on a
+    /// name makes it the image whose numbers are shown and set below.
+    /// </summary>
+    void DrawAlignImages(int reference, int target)
+    {
+        if (!ImGui.BeginTable("aligned"u8, 4, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV)) return;
+        ImGui.TableSetupColumn("Moves"u8);
+        ImGui.TableSetupColumn("Image"u8);
+        ImGui.TableSetupColumn("Moved by"u8);
+        ImGui.TableSetupColumn("Alike"u8);
+        ImGui.TableHeadersRow();
+        for (int i = 0; i < _compare.Count; i++)
+        {
+            if (i == reference) continue;
+            CompareItem entry = _compare[i];
+            ImGui.PushID(i);
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            bool moves = _pick.Moves(i);
+            if (ImGui.Checkbox("##moves"u8, ref moves))
+            {
+                _pick.SetMoves(i, moves);
+                _alignLastAction = AlignAction.None; // what is moved has changed: undo starts over
+            }
+
+            ImGui.TableSetColumnIndex(1);
+            int n = Utf8.TryWrite(_utf8, $"{i + 1}  {Path.GetFileName(entry.Path.AsSpan())}", out int written) ? written : 0;
+            _utf8[n] = 0;
+            fixed (byte* text = _utf8)
+            {
+                if (ImGui.Selectable(text, i == target) && _pick.Select(i))
+                {
+                    StopBlink();
+                    OnComparePick();
+                }
+            }
+            if (entry.AlignReport != null && ImGui.IsItemHovered() && ImGui.BeginTooltip())
+            {
+                Utf8Of(entry.AlignReport);
+                fixed (byte* text = _utf8) ImGui.TextUnformatted(text);
+                ImGui.EndTooltip();
+            }
+
+            ImGui.TableSetColumnIndex(2);
+            if (entry.Pose.IsIdentity)
+            {
+                ImGui.TextDisabled("not moved"u8);
+            }
+            else
+            {
+                n = WritePose(entry.Pose, _utf8.AsSpan(0, _utf8.Length - 1));
+                Put(n);
+            }
+
+            ImGui.TableSetColumnIndex(3);
+            switch (CurrentScore(reference, i))
+            {
+                case null:
+                    ImGui.TextDisabled("..."u8);
+                    break;
+                case double score when double.IsNaN(score):
+                    ImGui.TextDisabled("-"u8);
+                    break;
+                case double score:
+                    if (Utf8.TryWrite(_utf8, $"{score:0.0000}", out n)) Put(n);
+                    break;
+            }
+            // While the automatic alignment goes through the images, where each one is; what became of it, the name's tooltip says.
+            if (entry.AlignReport is { } report && report.EndsWith("..."))
+            {
+                ImGui.SameLine();
+                Utf8Of(report);
+                fixed (byte* text = _utf8) TextDim(text);
+            }
+            ImGui.PopID();
+        }
+        ImGui.EndTable();
+        ImGui.TextDisabled("Alike: correlation of brightness at reduced size; 1: the same picture."u8);
+        if (_compare.Count > 2)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Tick all"u8))
+                for (int i = 0; i < _compare.Count; i++) _pick.SetMoves(i, true);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Tick none"u8))
+                for (int i = 0; i < _compare.Count; i++) _pick.SetMoves(i, false);
+        }
     }
 
     // ---------------------------------------------------------------- saving the aligned image
 
     /// <summary>
-    /// Saves the second image of the pair as it lies on the first: on the first one's pixels
-    /// where that image lies pixel for pixel on the canvas, else on the canvas's. The file has
-    /// the image's own depth: PNG, or TIFF for float values.
+    /// Saves an image as it lies on the reference, the one whose numbers the align panel shows:
+    /// on the reference's pixels where that image lies pixel for pixel on the canvas, else on the
+    /// canvas's. The file has the image's own depth: PNG, or TIFF for float values.
     /// </summary>
     void SaveAligned()
     {
-        if (!TryMetricsKey(out MetricsKey key))
+        LayoutCompare();
+        int reference = _pick.Reference, moving = AlignTarget();
+        if (moving < 0 || !TryMetricsKey(reference, moving, out MetricsKey key))
         {
-            Notice(Comparing ? "Both images have to be loaded in full first." : "There is no comparison to save an aligned image of.");
+            Notice(!Comparing ? "There is no comparison to save an aligned image of." : moving < 0 ? "Aligning takes two images on show." : "Both images have to be loaded in full first.");
             return;
         }
-        (_, int moving) = _pick.Pair;
         string name = Path.GetFileNameWithoutExtension(_compare[moving].Path) + "_aligned";
         var canvas = new CanvasRect(0, 0, (int)_canvasWidth, (int)_canvasHeight);
         bool isFloat = key.Second.Layout == PixelLayout.GrayFloat;

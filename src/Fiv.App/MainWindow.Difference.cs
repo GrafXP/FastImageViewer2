@@ -11,10 +11,10 @@ using Windows.Win32.UI.Input.KeyboardAndMouse;
 
 namespace Fiv.App;
 
-// Comparing, second part: what two images differ by. The difference view and the similarity
-// heat map are two more of the modes that show a pair in one pane; the metrics panel, the
-// values written into the pixels at high zoom, the region the numbers are taken over, and
-// saving all of it to files are here too.
+// Comparing, second part: what images differ by. The difference view and the similarity heat
+// map show each image shown against the reference, a pane each; the metrics panel, the values
+// written into the pixels at high zoom, the region the numbers are taken over, and saving all of
+// it to files are here too.
 //
 // What is on screen is made by the GPU from the textures, at whatever zoom, for looking at.
 // The numbers and the saved files are computed on the CPU from the full-resolution pixels as
@@ -98,28 +98,38 @@ internal sealed unsafe partial class MainWindow
         _ => "absolute"u8,
     };
 
-    // ---------------------------------------------------------------- the pair and its units
+    // ---------------------------------------------------------------- pairs and their units
 
-    /// <summary>The two images the two-image modes show, if both are loaded far enough to know their size.</summary>
-    bool TryGetPair(out LoadedImage first, out LoadedImage second)
+    /// <summary>Two images of the set, if both are loaded far enough to know their size.</summary>
+    bool TryGetPair(int a, int b, out LoadedImage first, out LoadedImage second)
     {
         first = second = null!;
-        if (!Comparing) return false;
-        (int a, int b) = _pick.Pair;
-        if (a == b || a < 0 || b < 0 || a >= _compare.Count || b >= _compare.Count) return false;
+        if (!Comparing || a == b || a < 0 || b < 0 || a >= _compare.Count || b >= _compare.Count) return false;
         if (_compare[a].Image is not { HasSize: true } imageA || _compare[b].Image is not { HasSize: true } imageB) return false;
         first = imageA;
         second = imageB;
         return true;
     }
 
-    /// <summary>The units the pair's differences are in, and one step of them in the units the GPU samples.</summary>
-    ValueUnit PairUnit(out float step)
+    /// <summary>The units the differences of two images are in, and one step of them in the units the GPU samples.</summary>
+    ValueUnit PairUnit(int a, int b, out float step)
     {
         ValueUnit unit = ValueUnit.Bits8;
-        if (TryGetPair(out LoadedImage first, out LoadedImage second) && first.Layout is { } a && second.Layout is { } b) unit = CompareMetrics.Units(a, b).Unit;
+        if (TryGetPair(a, b, out LoadedImage first, out LoadedImage second) && first.Layout is { } layoutA && second.Layout is { } layoutB) unit = CompareMetrics.Units(layoutA, layoutB).Unit;
         step = CompareMetrics.UnitStep(unit);
         return unit;
+    }
+
+    /// <summary>
+    /// The image whose numbers the metrics panel shows in full, and whose difference is saved:
+    /// the active one if it is compared with the reference, otherwise the first one that is; -1
+    /// if the reference is all there is in the views.
+    /// </summary>
+    int DetailItem()
+    {
+        int active = _pick.Active;
+        if (active != _pick.Reference && _pick.IsShown(active)) return active;
+        return _orderCount > 1 ? _order[1] : -1;
     }
 
     /// <summary>The entry of the metrics that goes with the channel the display shows.</summary>
@@ -141,48 +151,106 @@ internal sealed unsafe partial class MainWindow
         public MetricsKey WholeImage => this with { Region = null };
     }
 
-    MetricsResult? _metrics;
-    MetricsKey _metricsKey;
-    bool _metricsFinal, _metricsWithMap;
+    /// <summary>The numbers of an image against the reference, as far as they have come: the early ones without similarity, or the final ones.</summary>
+    sealed class PairMetrics(MetricsKey key, MetricsResult result, bool final)
+    {
+        public readonly MetricsKey Key = key;
+        public MetricsResult Result = result;
+        public bool Final = final;
+    }
+
+    /// <summary>
+    /// The similarity of an image to the reference, pixel by pixel, for the heat map: on the CPU
+    /// for readouts and saving, on the GPU for drawing. It covers all the two have in common,
+    /// whatever the region of the numbers, so it is kept by the key of the whole image.
+    /// </summary>
+    sealed class SimilarityMap(MetricsKey key, DecodedImage map, GpuImage gpu, CanvasRect area) : IDisposable
+    {
+        public readonly MetricsKey Key = key;
+        public readonly DecodedImage Map = map;
+        public readonly GpuImage Gpu = gpu;
+        public readonly CanvasRect Area = area;
+
+        public void Dispose()
+        {
+            Gpu.Dispose();
+            Map.Dispose();
+        }
+    }
+
+    readonly List<PairMetrics> _pairMetrics = [];
+    readonly List<SimilarityMap> _similarities = [];
+    readonly List<MetricsKey> _wantedMetrics = [];             // the pairs whose numbers are wanted now, the most wanted first
+    readonly Dictionary<MetricsKey, string> _metricsFailed = []; // what the numbers failed for, and why: not tried for ever
     int _metricsJob;
     bool _metricsRunning, _metricsRunningMap;
-    MetricsKey _metricsRunningKey, _metricsFailedKey;
+    MetricsKey _metricsRunningKey;
     CancellationTokenSource? _metricsCancel;
-    string? _metricsError;
 
-    // The similarity per pixel, for the heat map: on the CPU for readouts and saving, on the GPU for drawing.
-    DecodedImage? _similarityMap;
-    GpuImage? _similarityGpu;
-    CanvasRect _similarityArea;
-    MetricsKey _similarityKey;
-
-    bool TryMetricsKey(out MetricsKey key)
+    bool TryMetricsKey(int a, int b, out MetricsKey key)
     {
         key = default;
-        if (_canvasWidth <= 0 || !TryGetPair(out LoadedImage first, out LoadedImage second)) return false;
-        if (first.Full is not { } a || second.Full is not { } b) return false; // numbers are of the full images only
-        (int indexA, int indexB) = _pick.Pair;
-        key = new MetricsKey(a, b, ImageToCanvas(indexA), ImageToCanvas(indexB), _region);
+        if (_canvasWidth <= 0 || !TryGetPair(a, b, out LoadedImage first, out LoadedImage second)) return false;
+        if (first.Full is not { } pixelsA || second.Full is not { } pixelsB) return false; // numbers are of the full images only
+        key = new MetricsKey(pixelsA, pixelsB, ImageToCanvas(a), ImageToCanvas(b), _region);
         return true;
     }
 
-    /// <summary>The numbers of the pair on show, if they have been computed for it as it is now.</summary>
-    MetricsResult? CurrentMetrics => _metrics != null && TryMetricsKey(out MetricsKey key) && key == _metricsKey ? _metrics : null;
+    PairMetrics? MetricsFor(in MetricsKey key)
+    {
+        foreach (PairMetrics entry in _pairMetrics)
+            if (entry.Key == key) return entry;
+        return null;
+    }
 
-    bool SimilarityReady => _similarityGpu != null && TryMetricsKey(out MetricsKey key) && key.WholeImage == _similarityKey;
+    /// <summary>The numbers of image <paramref name="b"/> against <paramref name="a"/>, if they have been computed for the two as they are now.</summary>
+    PairMetrics? MetricsOf(int a, int b) => TryMetricsKey(a, b, out MetricsKey key) ? MetricsFor(key) : null;
 
-    /// <summary>Starts the numbers for the pair on show if someone wants them and they are neither there nor on their way. Cheap; called every frame.</summary>
+    SimilarityMap? SimilarityFor(in MetricsKey whole)
+    {
+        foreach (SimilarityMap map in _similarities)
+            if (map.Key == whole) return map;
+        return null;
+    }
+
+    /// <summary>The similarity map of image <paramref name="b"/> to <paramref name="a"/> as the two are now, if it has been computed.</summary>
+    SimilarityMap? SimilarityOf(int a, int b) => TryMetricsKey(a, b, out MetricsKey key) ? SimilarityFor(key.WholeImage) : null;
+
+    /// <summary>
+    /// Starts numbers that someone wants and that are neither there nor on their way: of each
+    /// image shown against the reference, the active one's first, one pair at a time (each
+    /// uses all cores). Lets go of the numbers and maps of pairs no longer shown. Cheap; called every frame.
+    /// </summary>
     void UpdateMetrics()
     {
         bool map = _compareMode == CompareMode.Ssim;
         if (!Comparing || !(_showMetrics || map || _autoGain)) return;
         if (_dragAlign) return; // an image is being dragged into place: the numbers follow when it is let go
-        if (!TryMetricsKey(out MetricsKey key)) return;
-        if (_similarityMap != null && key.WholeImage != _similarityKey) DropSimilarity(); // of another pair: its memory is wanted back
-        if (_metrics != null && _metricsFinal && _metricsKey == key && (!map || _metricsWithMap)) return;
-        if (_metricsRunning && _metricsRunningKey == key && (!map || _metricsRunningMap)) return;
-        if (_metricsError != null && _metricsFailedKey == key) return; // it failed for exactly this: do not try for ever
-        StartMetrics(key, map);
+
+        _wantedMetrics.Clear();
+        int reference = _pick.Reference, detail = DetailItem();
+        if (detail >= 0 && TryMetricsKey(reference, detail, out MetricsKey first)) _wantedMetrics.Add(first);
+        for (int k = 1; k < _orderCount; k++)
+            if (_order[k] != detail && TryMetricsKey(reference, _order[k], out MetricsKey key)) _wantedMetrics.Add(key);
+
+        // Of pairs, regions and placements left: their maps' memory is wanted back.
+        _pairMetrics.RemoveAll(entry => !_wantedMetrics.Contains(entry.Key));
+        for (int i = _similarities.Count - 1; i >= 0; i--)
+        {
+            if (_wantedMetrics.Exists(key => key.WholeImage == _similarities[i].Key)) continue;
+            _similarities[i].Dispose();
+            _similarities.RemoveAt(i);
+        }
+
+        if (_metricsRunning && _wantedMetrics.Contains(_metricsRunningKey) && (!map || _metricsRunningMap || SimilarityFor(_metricsRunningKey.WholeImage) != null)) return; // one at a time
+        foreach (MetricsKey key in _wantedMetrics)
+        {
+            bool needMap = map && SimilarityFor(key.WholeImage) == null;
+            if (MetricsFor(key) is { Final: true } && !needMap) continue;
+            if (_metricsFailed.ContainsKey(key)) continue; // it failed for exactly this: do not try for ever
+            StartMetrics(key, needMap); // and what was on its way, of a pair no longer wanted, is cancelled
+            return;
+        }
     }
 
     void StartMetrics(MetricsKey key, bool map)
@@ -193,7 +261,6 @@ internal sealed unsafe partial class MainWindow
         _metricsRunning = true;
         _metricsRunningKey = key;
         _metricsRunningMap = map;
-        _metricsError = null;
         // The worker keeps the pixels alive, whatever the cache does with the images meanwhile.
         key.First.AddReference();
         key.Second.AddReference();
@@ -247,21 +314,27 @@ internal sealed unsafe partial class MainWindow
         if (final)
         {
             _metricsRunning = false;
-            _metricsError = error;
-            if (error != null) _metricsFailedKey = key;
+            if (error != null) _metricsFailed[key] = error;
         }
         if (result == null) return; // cancelled or failed
-        _metrics = result;
-        _metricsKey = key;
-        _metricsFinal = final;
-        _metricsWithMap = final && _metricsRunningMap;
-        if (final && result.SsimMap != null)
+        if (MetricsFor(key) is { } entry)
         {
-            DropSimilarity();
-            _similarityMap = result.SsimMap;
-            _similarityGpu = texture;
-            _similarityArea = result.SsimArea;
-            _similarityKey = key.WholeImage;
+            entry.Result = result;
+            entry.Final = final;
+        }
+        else
+        {
+            _pairMetrics.Add(new PairMetrics(key, result, final));
+        }
+        if (final && result.SsimMap is { } map)
+        {
+            if (SimilarityFor(key.WholeImage) is { } old)
+            {
+                _similarities.Remove(old);
+                old.Dispose();
+            }
+            if (texture != null) _similarities.Add(new SimilarityMap(key.WholeImage, map, texture, result.SsimArea));
+            else map.Dispose();
         }
         if (_autoGain) ApplyAutoGain();
         if (final && _options.PerfLog != null)
@@ -277,14 +350,6 @@ internal sealed unsafe partial class MainWindow
         }
     }
 
-    void DropSimilarity()
-    {
-        _similarityGpu?.Dispose();
-        _similarityMap?.Dispose();
-        _similarityGpu = null;
-        _similarityMap = null;
-    }
-
     /// <summary>Forgets the numbers and stops whatever is computing them: the comparison ended.</summary>
     void ResetMetrics()
     {
@@ -292,13 +357,14 @@ internal sealed unsafe partial class MainWindow
         _metricsCancel = null;
         _metricsJob++;
         _metricsRunning = false;
-        _metrics = null;
-        _metricsError = null;
-        _metricsKey = _metricsRunningKey = _metricsFailedKey = default;
+        _pairMetrics.Clear();
+        _metricsFailed.Clear();
+        _metricsRunningKey = default;
         _autoGain = false;
         _region = null;
         _regionArmed = _dragRegion = false;
-        DropSimilarity();
+        foreach (SimilarityMap map in _similarities) map.Dispose();
+        _similarities.Clear();
     }
 
     /// <summary>Chooses the gain that puts the largest difference of the shown channel at the end of the colour map.</summary>
@@ -308,36 +374,44 @@ internal sealed unsafe partial class MainWindow
         ApplyAutoGain();
     }
 
+    /// <summary>The gain that keeps the largest difference of every image against the reference within the map, once the numbers of all are there.</summary>
     void ApplyAutoGain()
     {
-        if (CurrentMetrics is not { } metrics || ShownChannel(metrics) is not { } channel) return; // comes when the numbers do
+        double largest = 0;
+        int pairs = 0;
+        for (int k = 1; k < _orderCount; k++)
+        {
+            int a = _order[0], b = _order[k];
+            if (MetricsOf(a, b) is not { } entry || ShownChannel(entry.Result) is not { } channel) return; // comes when the numbers do
+            PairUnit(a, b, out float step);
+            largest = Math.Max(largest, channel.MaxError * step); // in the units the GPU samples
+            pairs++;
+        }
+        if (pairs == 0) return;
         _autoGain = false;
-        PairUnit(out float step);
-        double largest = channel.MaxError * step; // in the units the GPU samples
         _differenceGain = largest > 0 ? (float)Math.Clamp(FullScale / largest, 1, MaxGain) : 1;
     }
 
-    // ---------------------------------------------------------------- drawing the two new modes
+    // ---------------------------------------------------------------- drawing the difference and the similarity
 
     /// <summary>The settings of the combine pass for the difference view.</summary>
     MixSettings DifferenceMix() => new() { Kind = MixKind.Difference, Amount = _differenceGain, Difference = CurrentDifferenceView(), Colors = CurrentMap };
 
     /// <summary>
-    /// Draws the similarity heat map into a pane, or, until it has been computed, the first image
-    /// of the pair as it is.
+    /// Draws the similarity heat map of a pane's image to the reference, or, until it has been
+    /// computed, the reference as it is.
     /// </summary>
     void RenderSimilarity(in Pane pane, in PaneRect r)
     {
-        if (SimilarityReady)
+        if (SimilarityOf(pane.First, pane.Second) is { } similarity)
         {
-            Affine2 mapToPane = CanvasToPane(pane.First, r).After(Affine2.ScaleTranslate(1, 1, _similarityArea.X, _similarityArea.Y));
-            // The map is a rectangle. Of a second image that is turned, only where it has pixels is the map shown.
-            GpuImage? second = pane.Second >= 0 && !_compare[pane.Second].Pose.IsIdentity ? Drawable(pane.Second) : null;
+            Affine2 mapToPane = CanvasToPane(pane.First, r).After(Affine2.ScaleTranslate(1, 1, similarity.Area.X, similarity.Area.Y));
+            // The map is a rectangle. Of an image that is turned, only where it has pixels is the map shown.
+            GpuImage? second = !_compare[pane.Second].Pose.IsIdentity ? Drawable(pane.Second) : null;
             var mix = new MixSettings { Kind = MixKind.Heat, Amount = _similarityGain, Colors = _differenceMap, WithinSecond = second != null };
-            Affine2 secondToPane = second != null ? CanvasToPane(pane.Second, r).After(ImageToCanvas(pane.Second)) : Affine2.Identity;
+            MixLayer within = second != null ? new MixLayer(second, CanvasToPane(pane.Second, r).After(ImageToCanvas(pane.Second)), ZoomOf(pane.Second, _compare[pane.Second].Image!)) : default;
             _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
-            _compareRenderer.Draw(_similarityGpu, mapToPane, ViewOf(pane.First).Zoom, second, secondToPane, second != null ? ZoomOf(pane.Second, _compare[pane.Second].Image!) : 1,
-                _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
+            _compareRenderer.Draw([new MixLayer(similarity.Gpu, mapToPane, ViewOf(pane.First).Zoom), within], _display, mix, r.X, r.Y, r.Width, r.Height, Backdrop);
         }
         else if (Drawable(pane.First) is { } texture)
         {
@@ -395,12 +469,12 @@ internal sealed unsafe partial class MainWindow
         return ok ? n : 0;
     }
 
-    /// <summary>The colour bar of the difference view and of the similarity view, at the right edge of the pane, with its values in the units of the files.</summary>
-    void DrawColorBar(ImDrawListPtr draw, in PaneRect r, float scale)
+    /// <summary>The colour bar of the difference view and of the similarity view, at the right edge of the pane, with its values in the units of the pane's files.</summary>
+    void DrawColorBar(ImDrawListPtr draw, in Pane pane, in PaneRect r, float scale)
     {
         bool similarity = _compareMode == CompareMode.Ssim;
         if (!similarity && _mask) return; // the mask has two colours and no scale
-        PairUnit(out float step);
+        PairUnit(pane.First, pane.Second, out float step);
         double top, middle, bottom;
         ReadOnlySpan<byte> caption;
         bool sign = false, percent = false;
@@ -482,14 +556,13 @@ internal sealed unsafe partial class MainWindow
     }
 
     /// <summary>
-    /// The pixels of the pair under the cursor as R, G, B, A in the units their difference is
+    /// The pixels of two images under the cursor as R, G, B, A in the units their difference is
     /// taken in (see <see cref="CompareMetrics.Units"/>). False if either has no pixel there.
     /// </summary>
-    bool TryGetPairPixels(out Vector4 first, out Vector4 second, out bool colour)
+    bool TryGetPairPixels(int a, int b, out Vector4 first, out Vector4 second, out bool colour)
     {
         first = second = default;
         colour = false;
-        (int a, int b) = _pick.Pair;
         if (!TryGetComparePixel(a, out _, out _, out PixelValue valueA) || !TryGetComparePixel(b, out _, out _, out PixelValue valueB)) return false;
         return PairValues(valueA, valueB, out first, out second, out colour);
     }
@@ -509,18 +582,19 @@ internal sealed unsafe partial class MainWindow
             : new Vector4(value.R, value.R, value.R, value.Layout == PixelLayout.Gray8 ? 255 : value.Layout == PixelLayout.Gray16 ? 65535 : 1);
     }
 
-    /// <summary>Writes "diff  R +3  G 0  B -5" (or "diff +12", or "SSIM 0.9731") for the point under the cursor into the shared buffer. False if there is nothing to say.</summary>
-    bool WriteDifferenceReadout()
+    /// <summary>Writes "diff  R +3  G 0  B -5" (or "diff +12", or "SSIM 0.9731") for the point under the cursor, of a pane's image against the reference, into the shared buffer. False if there is nothing to say.</summary>
+    bool WriteDifferenceReadout(in Pane pane)
     {
         if (_compareMode == CompareMode.Ssim)
         {
-            if (!SimilarityReady || _similarityMap is not { } map || !TryGetCursorCanvas(out double x, out double y)) return false;
-            int mx = (int)Math.Floor(x) - _similarityArea.X, my = (int)Math.Floor(y) - _similarityArea.Y;
+            if (SimilarityOf(pane.First, pane.Second) is not { } similarity || !TryGetCursorCanvas(out double x, out double y)) return false;
+            DecodedImage map = similarity.Map;
+            int mx = (int)Math.Floor(x) - similarity.Area.X, my = (int)Math.Floor(y) - similarity.Area.Y;
             if (mx < 0 || my < 0 || mx >= map.Width || my >= map.Height) return false;
             float value = ((float*)(map.Pixels + (long)my * map.Stride))[mx];
             return Utf8.TryWrite(_utf8, $"SSIM {value:0.0000}\0", out _);
         }
-        if (!TryGetPairPixels(out Vector4 a, out Vector4 b, out bool colour)) return false;
+        if (!TryGetPairPixels(pane.First, pane.Second, out Vector4 a, out Vector4 b, out bool colour)) return false;
         Vector4 d = b - a;
         if (!Utf8.TryWrite(_utf8, $"diff ", out int n)) return false;
         if (colour)
@@ -753,12 +827,21 @@ internal sealed unsafe partial class MainWindow
             return;
         }
         int n;
-        (int a, int b) = _pick.Pair;
-        if (a >= 0 && b >= 0 && a < _compare.Count && b < _compare.Count &&
-            Utf8.TryWrite(_utf8, $"{b + 1}  {Path.GetFileName(_compare[b].Path.AsSpan())}   less   {a + 1}  {Path.GetFileName(_compare[a].Path.AsSpan())}", out n)) Put(n);
+        int a = _pick.Reference, b = DetailItem();
+        if (b < 0)
+        {
+            ImGui.TextDisabled("Only the reference is in the views: tick another image in the compare panel (P)."u8);
+            ImGui.End();
+            return;
+        }
+        // Several images against the reference: a row each, of the channel shown. The one clicked is shown in full under it.
+        if (_orderCount > 2) DrawMetricsSummary(a, b);
+        if (Utf8.TryWrite(_utf8, $"{b + 1}  {Path.GetFileName(_compare[b].Path.AsSpan())}   less   {a + 1}  {Path.GetFileName(_compare[a].Path.AsSpan())}", out n)) Put(n);
 
-        MetricsResult? metrics = CurrentMetrics;
-        ValueUnit unit = PairUnit(out float step);
+        PairMetrics? entry = MetricsOf(a, b);
+        MetricsResult? metrics = entry?.Result;
+        bool final = entry is { Final: true };
+        ValueUnit unit = PairUnit(a, b, out float step);
         if (metrics != null)
         {
             CanvasRect area = metrics.Area;
@@ -814,7 +897,7 @@ internal sealed unsafe partial class MainWindow
                     MetricCell(3, channel.Psnr);
                     MetricCell(4, channel.MaxError);
                     MetricCell(5, 100 * channel.Histogram.FractionBeyond(threshold));
-                    MetricCell(6, channel.Ssim, pending: !_metricsFinal && channel.Name != ChannelMetrics.Alpha);
+                    MetricCell(6, channel.Ssim, pending: !final && channel.Name != ChannelMetrics.Alpha);
                 }
                 ImGui.EndTable();
             }
@@ -824,14 +907,14 @@ internal sealed unsafe partial class MainWindow
         {
             ImGui.TextDisabled("The two images, or the region and they, have no pixels in common."u8);
         }
-        else if (_metricsError != null)
+        else if (TryMetricsKey(a, b, out MetricsKey key) && _metricsFailed.TryGetValue(key, out string? error))
         {
-            Utf8Of(_metricsError);
+            Utf8Of(error);
             fixed (byte* text = _utf8) TextIn(new Vector4(1, 0.5f, 0.4f, 1), text);
         }
         else
         {
-            ImGui.TextDisabled(TryMetricsKey(out _) ? "Computing..."u8 : "Waiting for both images to be loaded in full..."u8);
+            ImGui.TextDisabled(TryMetricsKey(a, b, out _) ? "Computing..."u8 : "Waiting for both images to be loaded in full..."u8);
         }
 
         // The threshold, in the units of the files: what "over T" counts, and what the mask of the difference view marks.
@@ -843,12 +926,67 @@ internal sealed unsafe partial class MainWindow
         ImGui.Checkbox("Mark what is over it (W)"u8, ref _mask);
 
         if (ImGui.Button("Save the numbers... (Ctrl+Shift+S)"u8)) _deferred = SaveMetrics;
-        if (metrics != null && _metricsFinal && Utf8.TryWrite(_utf8, $"errors {metrics.BasicMs:0} ms, similarity {metrics.SsimMs:0} ms\0", out _))
+        if (metrics != null && final && Utf8.TryWrite(_utf8, $"errors {metrics.BasicMs:0} ms, similarity {metrics.SsimMs:0} ms\0", out _))
         {
             ImGui.SameLine();
             fixed (byte* text = _utf8) TextDim(text);
         }
         ImGui.End();
+    }
+
+    /// <summary>
+    /// The numbers of every image shown against the reference <paramref name="reference"/>, a
+    /// row each, of the channel the display shows. A click on a row makes that image the active
+    /// one, whose numbers are shown in full: <paramref name="detail"/>.
+    /// </summary>
+    void DrawMetricsSummary(int reference, int detail)
+    {
+        if (Utf8.TryWrite(_utf8, $"Each image less {reference + 1}  {Path.GetFileName(_compare[reference].Path.AsSpan())}, the reference; of the channel shown (H):\0", out _))
+        {
+            fixed (byte* text = _utf8) TextDim(text);
+        }
+        if (!ImGui.BeginTable("each"u8, 6, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV)) return;
+        ImGui.TableSetupColumn("Image"u8);
+        ImGui.TableSetupColumn("MAE"u8);
+        ImGui.TableSetupColumn("PSNR, dB"u8);
+        ImGui.TableSetupColumn("Max"u8);
+        ImGui.TableSetupColumn("Over T, %"u8);
+        ImGui.TableSetupColumn("SSIM"u8);
+        ImGui.TableHeadersRow();
+        for (int k = 1; k < _orderCount; k++)
+        {
+            int item = _order[k];
+            ImGui.PushID(item);
+            ImGui.TableNextRow();
+            ImGui.TableSetColumnIndex(0);
+            int n = Utf8.TryWrite(_utf8, $"{item + 1}  {Path.GetFileName(_compare[item].Path.AsSpan())}", out int written) ? written : 0;
+            _utf8[n] = 0;
+            fixed (byte* text = _utf8)
+            {
+                if (ImGui.Selectable(text, item == detail, ImGuiSelectableFlags.SpanAllColumns) && _pick.Select(item))
+                {
+                    StopBlink();
+                    OnComparePick();
+                }
+            }
+            PairMetrics? entry = MetricsOf(reference, item);
+            if (entry != null && ShownChannel(entry.Result) is { } channel)
+            {
+                PairUnit(reference, item, out float step);
+                MetricCell(1, channel.Mae);
+                MetricCell(2, channel.Psnr);
+                MetricCell(3, channel.MaxError);
+                MetricCell(4, 100 * channel.Histogram.FractionBeyond(_threshold / step));
+                MetricCell(5, channel.Ssim, pending: !entry.Final && channel.Name != ChannelMetrics.Alpha);
+            }
+            else
+            {
+                for (int column = 1; column < 6; column++) MetricCell(column, 0, pending: true);
+            }
+            ImGui.PopID();
+        }
+        ImGui.EndTable();
+        ImGui.Separator();
     }
 
     /// <summary>
@@ -1017,10 +1155,11 @@ internal sealed unsafe partial class MainWindow
         return false;
     }
 
-    /// <summary>One step of the threshold: a level at a time while it is small, a quarter more or less from 16 levels on.</summary>
+    /// <summary>One step of the threshold, in the units of the image whose numbers are shown in full: a level at a time while it is small, a quarter more or less from 16 levels on.</summary>
     void StepThreshold(int direction)
     {
-        ValueUnit unit = PairUnit(out float step);
+        LayoutCompare();
+        ValueUnit unit = PairUnit(_pick.Reference, DetailItem(), out float step);
         float smallest = unit is ValueUnit.Bits8 or ValueUnit.Bits16 ? step : FullScale / 1024;
         float levels = _threshold / smallest;
         levels = levels < 16 || (levels == 16 && direction < 0) ? levels + direction : direction > 0 ? levels * 1.25f : levels / 1.25f;
@@ -1075,69 +1214,71 @@ internal sealed unsafe partial class MainWindow
         });
     }
 
-    /// <summary>"first_vs_second_what" from the two files' names.</summary>
-    string PairName(string what)
+    /// <summary>"first_vs_second_what" from the files' names; of more than three, "first_vs_second_vs_third_and_2_more_what".</summary>
+    string SetName(ReadOnlySpan<int> items, string what)
     {
-        (int a, int b) = _pick.Pair;
-        return $"{Path.GetFileNameWithoutExtension(_compare[a].Path)}_vs_{Path.GetFileNameWithoutExtension(_compare[b].Path)}_{what}";
+        var name = new System.Text.StringBuilder();
+        for (int k = 0; k < items.Length && k < 3; k++)
+        {
+            if (k > 0) name.Append("_vs_");
+            name.Append(Path.GetFileNameWithoutExtension(_compare[items[k]].Path));
+        }
+        if (items.Length > 3) name.Append($"_and_{items.Length - 3}_more");
+        return name.Append('_').Append(what).ToString();
     }
 
     /// <summary>
-    /// Saves what the two-image view shows, computed again from the full images at the full
-    /// resolution of the canvas: the difference in its colours, the similarity map, or the
-    /// split, blend or checkerboard as set.
+    /// Saves what the view shows, computed again from the full images at the full resolution of
+    /// the canvas: the split, blend, overlay or checkerboard of all the images shown, as set; the difference
+    /// in its colours, or the similarity map, of the image whose numbers are shown in full.
     /// </summary>
     void SaveView()
     {
         if (!Comparing || !_compareMode.IsOverlay())
         {
-            Notice("Saving works in the views that combine two images: split, blend, checkerboard, difference, SSIM.");
-            return;
-        }
-        if (!TryMetricsKey(out MetricsKey key))
-        {
-            Notice("Both images have to be loaded in full first.");
+            Notice("Saving works in the views that combine images: split, blend, overlay, checkerboard, difference, SSIM.");
             return;
         }
         LayoutCompare();
         if (_paneCount == 0) return;
-        Pane pane = _panes[0];
+        if (_compareMode.IsStack())
+        {
+            SaveStack();
+            return;
+        }
+        int reference = _pick.Reference, item = DetailItem();
+        if (item < 0)
+        {
+            Notice("Only the reference is in the views: there is nothing to compare it with.");
+            return;
+        }
+        if (!TryMetricsKey(reference, item, out MetricsKey key))
+        {
+            Notice("Both images have to be loaded in full first.");
+            return;
+        }
         int width = (int)_canvasWidth, height = (int)_canvasHeight;
         CompareMode mode = _compareMode;
         ToneSettings tone = CurrentTone();
         DifferenceView view = CurrentDifferenceView();
         Colormap colors = CurrentMap;
-        float similarityGain = _similarityGain, opacity = _opacity;
-
-        // The divider and the cells are where the screen has them, in canvas coordinates.
-        Affine2 paneToCanvas = CanvasToPane(pane.First, pane.Rect).Inverse();
-        (double dividerX, double dividerY) = paneToCanvas.Apply(DividerAt(pane.Rect), DividerAt(pane.Rect));
-        (double originX, double originY) = paneToCanvas.Apply(pane.Rect.Width / 2.0, pane.Rect.Height / 2.0);
-        float cellSize = (float)(_checkerSize / ViewOf(pane.First).Zoom);
-        bool splitRows = _splitRows;
+        float similarityGain = _similarityGain;
 
         DecodedImage? similarity = null;
-        CanvasRect similarityArea = _similarityArea;
+        CanvasRect similarityArea = default;
         if (mode == CompareMode.Ssim)
         {
-            if (!SimilarityReady || _similarityMap == null)
+            if (SimilarityFor(key.WholeImage) is not { } map)
             {
                 Notice("The similarity is still being computed.");
                 return;
             }
-            similarity = _similarityMap;
+            similarity = map.Map;
+            similarityArea = map.Area;
             similarity.AddReference();
         }
         key.First.AddReference();
         key.Second.AddReference();
-        string what = mode switch
-        {
-            CompareMode.Difference => "difference",
-            CompareMode.Ssim => "ssim",
-            CompareMode.Blend => "blend",
-            CompareMode.Checker => "checkerboard",
-            _ => "split",
-        };
         void Release()
         {
             key.First.Dispose();
@@ -1145,21 +1286,14 @@ internal sealed unsafe partial class MainWindow
             similarity?.Dispose();
         }
         if (_options.ExportDir != null) Notice("Saving...");
-        SaveTo(PairName(what) + ".png", "view.png", [("PNG image", "png")], path => Export(Path.GetFileName(path), () =>
+        string what = mode == CompareMode.Ssim ? "ssim" : "difference";
+        SaveTo(SetName([reference, item], what) + ".png", "view.png", [("PNG image", "png")], path => Export(Path.GetFileName(path), () =>
         {
             try
             {
-                var first = new CompareSource(key.First, key.FirstToCanvas);
-                var second = new CompareSource(key.Second, key.SecondToCanvas);
-                using DecodedImage image = mode switch
-                {
-                    CompareMode.Difference => CompareExport.Difference(first, second, width, height, view, tone),
-                    CompareMode.Ssim => CompareExport.Heat(similarity!, similarityArea, width, height, colors, similarityGain),
-                    CompareMode.Blend => CompareExport.Mix(first, second, width, height, MixExport.Blend, opacity, 0, 0, tone),
-                    CompareMode.Checker => CompareExport.Mix(first, second, width, height, MixExport.Checker, cellSize, (float)originX, (float)originY, tone),
-                    _ => CompareExport.Mix(first, second, width, height, splitRows ? MixExport.SplitRows : MixExport.SplitColumns,
-                        (float)(splitRows ? dividerY : dividerX), 0, 0, tone),
-                };
+                using DecodedImage image = mode == CompareMode.Ssim
+                    ? CompareExport.Heat(similarity!, similarityArea, width, height, colors, similarityGain)
+                    : CompareExport.Difference(new CompareSource(key.First, key.FirstToCanvas), new CompareSource(key.Second, key.SecondToCanvas), width, height, view, tone);
                 ImageWriter.WritePng(path, image, alpha: true);
             }
             finally
@@ -1169,12 +1303,91 @@ internal sealed unsafe partial class MainWindow
         }), Release);
     }
 
-    /// <summary>Saves the difference itself, second less first, in the units of the files, as 32-bit float TIFF: for other programs to work on.</summary>
+    /// <summary>Saves the split, blend, overlay or checkerboard of all the images shown, with the dividers and cells where the screen has them, in canvas coordinates.</summary>
+    void SaveStack()
+    {
+        Pane pane = _panes[0];
+        var pixels = new DecodedImage[_orderCount];
+        var toCanvas = new Affine2[_orderCount];
+        for (int k = 0; k < _orderCount; k++)
+        {
+            if (_compare[_order[k]].Image is not { HasSize: true, Full: { } full })
+            {
+                Notice("All the images in the view have to be loaded in full first.");
+                return;
+            }
+            pixels[k] = full;
+            toCanvas[k] = ImageToCanvas(_order[k]);
+        }
+        int width = (int)_canvasWidth, height = (int)_canvasHeight;
+        CompareMode mode = _compareMode;
+        ToneSettings tone = CurrentTone();
+        Affine2 paneToCanvas = CanvasToPane(pane.First, pane.Rect).Inverse();
+        (double originX, double originY) = paneToCanvas.Apply(pane.Rect.Width / 2.0, pane.Rect.Height / 2.0);
+        float cellSize = (float)(_checkerSize / ViewOf(pane.First).Zoom);
+        bool splitRows = _splitRows;
+        float[] amounts = new float[_orderCount];
+        for (int k = 0; k < _orderCount; k++)
+        {
+            if (mode == CompareMode.Blend)
+            {
+                amounts[k] = OpacityOf(k);
+            }
+            else if (mode == CompareMode.Overlay)
+            {
+                amounts[k] = _compare[_order[k]].OverlayOpacity;
+            }
+            else if (k < _orderCount - 1)
+            {
+                (double x, double y) = paneToCanvas.Apply(DividerAt(pane.Rect, k), DividerAt(pane.Rect, k));
+                amounts[k] = (float)(splitRows ? y : x);
+            }
+        }
+        MixExport kind = mode switch
+        {
+            CompareMode.Blend => MixExport.Blend,
+            CompareMode.Overlay => MixExport.Overlay,
+            CompareMode.Checker => MixExport.Checker,
+            _ => splitRows ? MixExport.SplitRows : MixExport.SplitColumns,
+        };
+        foreach (DecodedImage image in pixels) image.AddReference();
+        void Release()
+        {
+            foreach (DecodedImage image in pixels) image.Dispose();
+        }
+        string what = mode switch
+        {
+            CompareMode.Blend => "blend",
+            CompareMode.Overlay => "overlay",
+            CompareMode.Checker => "checkerboard",
+            _ => "split",
+        };
+        if (_options.ExportDir != null) Notice("Saving...");
+        SaveTo(SetName(_order.AsSpan(0, _orderCount), what) + ".png", "view.png", [("PNG image", "png")], path => Export(Path.GetFileName(path), () =>
+        {
+            try
+            {
+                var sources = new CompareSource[pixels.Length];
+                for (int k = 0; k < pixels.Length; k++) sources[k] = new CompareSource(pixels[k], toCanvas[k]);
+                using DecodedImage image = CompareExport.Mix(sources, width, height, kind, amounts, cellSize, (float)originX, (float)originY, tone);
+                ImageWriter.WritePng(path, image, alpha: true);
+            }
+            finally
+            {
+                Release();
+            }
+        }), Release);
+    }
+
+    /// <summary>Saves the difference itself, of the image whose numbers are shown in full less the reference, in the units of the files, as 32-bit float TIFF: for other programs to work on.</summary>
     void SaveDifferenceValues()
     {
-        if (!TryMetricsKey(out MetricsKey key))
+        LayoutCompare();
+        int reference = _pick.Reference, item = DetailItem();
+        if (!TryMetricsKey(reference, item, out MetricsKey key))
         {
-            Notice(Comparing ? "Both images have to be loaded in full first." : "There is no comparison to save the difference of.");
+            Notice(!Comparing ? "There is no comparison to save the difference of."
+                : item < 0 ? "Only the reference is in the views: there is nothing to compare it with." : "Both images have to be loaded in full first.");
             return;
         }
         int width = (int)_canvasWidth, height = (int)_canvasHeight, channel = (int)_display.Channel;
@@ -1190,7 +1403,7 @@ internal sealed unsafe partial class MainWindow
             key.First.Dispose();
             key.Second.Dispose();
         }
-        SaveTo(PairName("difference") + ".tif", "difference.tif", [("TIFF image, 32-bit float", "tif")], path => Export(Path.GetFileName(path), () =>
+        SaveTo(SetName([reference, item], "difference") + ".tif", "difference.tif", [("TIFF image, 32-bit float", "tif")], path => Export(Path.GetFileName(path), () =>
         {
             try
             {
@@ -1204,7 +1417,10 @@ internal sealed unsafe partial class MainWindow
         }), Release);
     }
 
-    /// <summary>Saves the numbers as CSV or JSON, whichever the file is named as. They are computed first if they are not there yet.</summary>
+    /// <summary>
+    /// Saves the numbers of every image shown against the reference as CSV or JSON, whichever
+    /// the file is named as. They are computed first if they are not there yet.
+    /// </summary>
     void SaveMetrics()
     {
         if (!Comparing)
@@ -1212,31 +1428,43 @@ internal sealed unsafe partial class MainWindow
             Notice("There is no comparison to save the numbers of.");
             return;
         }
-        if (CurrentMetrics is not { } metrics || !_metricsFinal)
+        LayoutCompare();
+        int reference = _pick.Reference;
+        if (_orderCount < 2)
         {
-            _showMetrics = true; // which starts them
-            Notice("The numbers are still being computed; save again when the panel shows them.");
+            Notice("Only the reference is in the views: there is nothing to compare it with.");
             return;
         }
-        (int a, int b) = _pick.Pair;
-        string first = _compare[a].Path, second = _compare[b].Path;
-        PairUnit(out float step);
-        double threshold = _threshold / step;
+        var entries = new List<MetricsEntry>();
+        for (int k = 1; k < _orderCount; k++)
+        {
+            int item = _order[k];
+            if (MetricsOf(reference, item) is not { Final: true } entry)
+            {
+                _showMetrics = true; // which starts them
+                Notice("The numbers are still being computed; save again when the panel shows them.");
+                return;
+            }
+            PairUnit(reference, item, out float step);
+            entries.Add(new MetricsEntry(entry.Result, _compare[reference].Path, _compare[item].Path, _threshold / step));
+        }
         if (_options.ExportDir is { } folder)
         {
             // Tests get both forms.
             Task.Run(() => Export("metrics.csv and metrics.json", () =>
             {
-                File.WriteAllText(Path.Combine(folder, "metrics.csv"), MetricsReport.Csv(metrics, first, second, threshold));
-                File.WriteAllText(Path.Combine(folder, "metrics.json"), MetricsReport.Json(metrics, first, second, threshold));
+                File.WriteAllText(Path.Combine(folder, "metrics.csv"), MetricsReport.Csv(entries));
+                File.WriteAllText(Path.Combine(folder, "metrics.json"), MetricsReport.Json(entries));
             }));
             return;
         }
-        FileActions.SaveAsync(_hwnd, PairName("metrics") + ".csv", [("CSV table", "csv"), ("JSON", "json")], path =>
+        Span<int> items = stackalloc int[MaxCompare];
+        _order.AsSpan(0, _orderCount).CopyTo(items);
+        FileActions.SaveAsync(_hwnd, SetName(items[.._orderCount], "metrics") + ".csv", [("CSV table", "csv"), ("JSON", "json")], path =>
         {
             if (path == null) return;
             bool json = path.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
-            Export(Path.GetFileName(path), () => File.WriteAllText(path, json ? MetricsReport.Json(metrics, first, second, threshold) : MetricsReport.Csv(metrics, first, second, threshold)));
+            Export(Path.GetFileName(path), () => File.WriteAllText(path, json ? MetricsReport.Json(entries) : MetricsReport.Csv(entries)));
         });
     }
 }

@@ -127,6 +127,8 @@ internal sealed unsafe partial class MainWindow
         LayoutCompare();
         for (int p = 0; p < _paneCount; p++)
             if (Drawable(_panes[p].First) != null || Drawable(_panes[p].Second) != null) return true;
+        for (int k = 0; k < _orderCount; k++)
+            if (Drawable(_order[k]) != null) return true;
         return false;
     }
 
@@ -329,7 +331,7 @@ internal sealed unsafe partial class MainWindow
         }
         LayoutCompare();
         for (int p = 0; p < _paneCount; p++)
-            if (_panes[p].Second < 0 && Drawable(_panes[p].First) != null) _onShow.Add(_compare[_panes[p].First].Image!);
+            if (_panes[p].Second < 0 && !_panes[p].Stack && Drawable(_panes[p].First) != null) _onShow.Add(_compare[_panes[p].First].Image!);
     }
 
     bool HeightsReady()
@@ -483,10 +485,10 @@ internal sealed unsafe partial class MainWindow
         _surfaceRenderer.Draw(texture, entry?.Texture, settings, _display, area.X, area.Y, area.Width, area.Height, Backdrop);
     }
 
-    /// <summary>A pane of the comparison as a surface: its image on the canvas, or the two it combines laid flat and raised.</summary>
+    /// <summary>A pane of the comparison as a surface: its image on the canvas, or the images it combines laid flat and raised.</summary>
     void RenderSurfacePane(in Pane pane)
     {
-        if (pane.Second < 0)
+        if (pane.Second < 0 && !pane.Stack)
         {
             if (Drawable(pane.First) is { } texture) DrawImageSurface(_compare[pane.First].Image!, texture, ImageToCanvas(pane.First), pane.Rect);
             return;
@@ -506,72 +508,59 @@ internal sealed unsafe partial class MainWindow
     }
 
     /// <summary>
-    /// A view that combines two images, drawn flat over the whole canvas by the pass that draws
-    /// it in 2D, then raised by what it shows. The divider and the cells are where the pane has them now.
+    /// A view that combines images, drawn flat over the whole canvas by the passes that draw it
+    /// in 2D, then raised by what it shows. The dividers and the cells are where the pane has them now.
     /// </summary>
     void DrawFlatSurface(in Pane pane)
     {
-        GpuImage? a = Drawable(pane.First), b = Drawable(pane.Second);
-        if (a == null && b == null) return;
         PaneRect r = pane.Rect;
         int canvasWidth = (int)Math.Ceiling(_canvasWidth), canvasHeight = (int)Math.Ceiling(_canvasHeight);
         (int width, int height) = Resampler.FitWithin(canvasWidth, canvasHeight, HeightField.MaxSize);
-        _surfaceCanvas ??= new SurfaceCanvas(_gpu!);
-        _surfaceCanvas.Ensure(width, height, canvasWidth, canvasHeight);
         double sx = (double)width / canvasWidth, sy = (double)height / canvasHeight;
         Affine2 canvasToFlat = Affine2.ScaleTranslate(sx, sy, 0, 0);
         Affine2 paneToFlat = canvasToFlat.After(CanvasToPane(pane.First, r).Inverse());
 
-        Affine2 aToFlat = Affine2.Identity, bToFlat = Affine2.Identity;
-        double zoomA = 1, zoomB = 1;
-        if (a != null)
-        {
-            aToFlat = canvasToFlat.After(ImageToCanvas(pane.First));
-            zoomA = sx * PlacementOf(_compare[pane.First].Image!).A * _compare[pane.First].Pose.Scale;
-        }
-        if (b != null)
-        {
-            bToFlat = canvasToFlat.After(ImageToCanvas(pane.Second));
-            zoomB = sx * PlacementOf(_compare[pane.Second].Image!).A * _compare[pane.Second].Pose.Scale;
-        }
+        MixLayer Flat(int item) => Drawable(item) is { } texture
+            ? new MixLayer(texture, canvasToFlat.After(ImageToCanvas(item)), sx * PlacementOf(_compare[item].Image!).A * _compare[item].Pose.Scale, 1)
+            : default;
 
         MixSettings mix;
-        switch (_compareMode)
+        int count = 2;
+        if (pane.Stack)
         {
-            case CompareMode.Split:
+            count = StackLayers(r, canvasToFlat, paneToFlat);
+            bool any = false;
+            for (int k = 0; k < count; k++) any |= _layers[k].Image != null;
+            if (!any) return;
+            (double x, double y) = paneToFlat.Apply(r.Width / 2.0, r.Height / 2.0);
+            mix = StackMix((float)(_checkerSize / ViewOf(pane.First).Zoom * sx), (float)x, (float)y);
+        }
+        else
+        {
+            _layers[0] = Flat(pane.First);
+            _layers[1] = Flat(pane.Second);
+            if (_layers[0].Image == null && _layers[1].Image == null) return;
+            if (_compareMode == CompareMode.Ssim && SimilarityOf(pane.First, pane.Second) is { } similarity)
             {
-                (double x, double y) = paneToFlat.Apply(DividerAt(r), DividerAt(r));
-                mix = new MixSettings { Kind = _splitRows ? MixKind.SplitRows : MixKind.SplitColumns, Amount = (float)(_splitRows ? y : x) };
-                break;
+                // As RenderSimilarity: the map over its rectangle, and of a turned image only where it has pixels.
+                _layers[0] = new MixLayer(similarity.Gpu, canvasToFlat.After(Affine2.ScaleTranslate(1, 1, similarity.Area.X, similarity.Area.Y)), sx);
+                if (_compare[pane.Second].Pose.IsIdentity) _layers[1] = default;
+                mix = new MixSettings { Kind = MixKind.Heat, Amount = _similarityGain, Colors = _differenceMap, WithinSecond = _layers[1].Image != null };
             }
-            case CompareMode.Blend:
-                mix = new MixSettings { Kind = MixKind.Blend, Amount = _opacity };
-                break;
-            case CompareMode.Difference:
+            else if (_compareMode == CompareMode.Ssim)
+            {
+                mix = new MixSettings { Kind = MixKind.Blend }; // the reference as it is, until the similarity is there
+                count = 1;
+            }
+            else
+            {
                 mix = DifferenceMix();
-                break;
-            case CompareMode.Ssim when SimilarityReady:
-            {
-                // As RenderSimilarity: the map over its rectangle, and of a turned second image only where it has pixels.
-                a = _similarityGpu;
-                aToFlat = canvasToFlat.After(Affine2.ScaleTranslate(1, 1, _similarityArea.X, _similarityArea.Y));
-                zoomA = sx;
-                if (pane.Second < 0 || _compare[pane.Second].Pose.IsIdentity) b = null;
-                mix = new MixSettings { Kind = MixKind.Heat, Amount = _similarityGain, Colors = _differenceMap, WithinSecond = b != null };
-                break;
-            }
-            case CompareMode.Ssim:
-                mix = new MixSettings { Kind = MixKind.Blend, Amount = 0 }; // the first image as it is, until the similarity is there
-                break;
-            default:
-            {
-                (double x, double y) = paneToFlat.Apply(r.Width / 2.0, r.Height / 2.0);
-                mix = new MixSettings { Kind = MixKind.Checker, Amount = (float)(_checkerSize / ViewOf(pane.First).Zoom * sx), OriginX = (float)x, OriginY = (float)y };
-                break;
             }
         }
+        _surfaceCanvas ??= new SurfaceCanvas(_gpu!);
+        _surfaceCanvas.Ensure(width, height, canvasWidth, canvasHeight);
         _compareRenderer ??= new CompareRenderer(_gpu!, _renderer!);
-        _compareRenderer.DrawFlat(a, aToFlat, zoomA, b, bToFlat, zoomB, _display, mix, _surfaceCanvas, Backdrop);
+        _compareRenderer.DrawFlat(_layers.AsSpan(0, count), _display, mix, _surfaceCanvas, Backdrop);
 
         SurfaceSettings settings = SurfaceSettingsFor(r);
         settings.ImageToGround = Affine2.Identity; // the canvas is the ground

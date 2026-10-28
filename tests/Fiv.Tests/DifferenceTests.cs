@@ -705,6 +705,67 @@ public class CompareExportTests
     }
 
     [Fact]
+    public void ASplitOfSeveralImagesHasAStripForEach()
+    {
+        using DecodedImage first = Pixels.Solid(9, 2, 10, 0, 0), second = Pixels.Solid(9, 2, 20, 0, 0), third = Pixels.Solid(9, 2, 30, 0, 0);
+        using DecodedImage columns = CompareExport.Mix([At(first), At(second), At(third)], 9, 2, MixExport.SplitColumns, [2, 6.5f], 0, 0, 0, ToneSettings.Default);
+        Assert.Equal([10, 10, 20, 20, 20, 20, 30, 30, 30], Enumerable.Range(0, 9).Select(x => (int)Pixels.At(columns, x, 1).R));
+        // Dividers on top of each other leave the image between them no strip.
+        using DecodedImage shut = CompareExport.Mix([At(first), At(second), At(third)], 9, 2, MixExport.SplitColumns, [4, 4], 0, 0, 0, ToneSettings.Default);
+        Assert.Equal((10, 30), (Pixels.At(shut, 3, 0).R, Pixels.At(shut, 4, 0).R));
+    }
+
+    [Fact]
+    public void ABlendOfSeveralImagesLaysEachOverThoseBeforeIt()
+    {
+        using DecodedImage first = Pixels.Solid(4, 4, 30, 0, 0), second = Pixels.Solid(4, 4, 90, 0, 0), third = Pixels.Solid(2, 2, 240, 0, 0);
+        // Opacities of 1/2 and 1/3: an equal mix of the three, (30 + 90 + 240) / 3.
+        using DecodedImage blend = CompareExport.Mix([At(first), At(second), At(third)], 4, 4, MixExport.Blend, [1, 0.5f, 1 / 3f], 0, 0, 0, ToneSettings.Default);
+        Assert.Equal((byte)120, Pixels.At(blend, 1, 1).R);
+        Assert.Equal((byte)60, Pixels.At(blend, 3, 3).R); // where the third has no pixels, the first two as they are
+    }
+
+    [Fact]
+    public void TheOverlayCountsEachImageByItsOpacityAndIsAsTransparentAsTheyAre()
+    {
+        using DecodedImage first = Pixels.Solid(4, 4, 30, 0, 0), second = Pixels.Solid(4, 4, 90, 0, 0), third = Pixels.Solid(2, 2, 240, 0, 0);
+        CompareSource[] sources = [At(first), At(second), At(third)];
+        using DecodedImage equal = CompareExport.Mix(sources, 4, 4, MixExport.Overlay, [1, 1, 1], 0, 0, 0, ToneSettings.Default);
+        Assert.Equal(((byte)120, (byte)255), (Pixels.At(equal, 1, 1).R, Pixels.At(equal, 1, 1).A)); // (30 + 90 + 240) / 3, opaque
+        Assert.Equal((byte)60, Pixels.At(equal, 3, 3).R);                                             // where the third has no pixels, the other two
+        using DecodedImage weighted = CompareExport.Mix(sources, 4, 4, MixExport.Overlay, [0.5f, 0, 0.5f], 0, 0, 0, ToneSettings.Default);
+        Assert.Equal(((byte)135, (byte)191), (Pixels.At(weighted, 1, 1).R, Pixels.At(weighted, 1, 1).A)); // half each; 1 - 0.5 * 0.5 covered
+        Assert.Equal(((byte)30, (byte)128), (Pixels.At(weighted, 3, 3).R, Pixels.At(weighted, 3, 3).A));  // the first alone, half see-through
+        using DecodedImage none = CompareExport.Mix(sources, 4, 4, MixExport.Overlay, [0, 0, 0], 0, 0, 0, ToneSettings.Default);
+        Assert.Equal((byte)0, Pixels.At(none, 1, 1).A);
+    }
+
+    [Fact]
+    public void ACheckerboardOfSeveralImagesGoesRoundThem()
+    {
+        using DecodedImage first = Pixels.Solid(6, 6, 10, 0, 0), second = Pixels.Solid(6, 6, 20, 0, 0), third = Pixels.Solid(6, 6, 30, 0, 0);
+        using DecodedImage checker = CompareExport.Mix([At(first), At(second), At(third)], 6, 6, MixExport.Checker, [], 2, 0, 0, ToneSettings.Default);
+        for (int y = 0; y < 6; y++)
+        for (int x = 0; x < 6; x++)
+            Assert.Equal(10 * (1 + CompareGeometry.CheckerLayer(x / 2, y / 2, 3)), Pixels.At(checker, x, y).R);
+    }
+
+    [Fact]
+    public void TheMixOfTwoIsTheMixOfSeveralWithTwo()
+    {
+        using DecodedImage first = Pixels.Bgra(7, 5, (x, y) => ((byte)(x * 30), (byte)(y * 40), 7, 255)), second = Pixels.Solid(5, 4, 200, 100, 50);
+        (MixExport, float, float[])[] cases = [(MixExport.SplitRows, 2.5f, [2.5f]), (MixExport.Blend, 0.3f, [1, 0.3f]), (MixExport.Checker, 2f, [])];
+        foreach ((MixExport kind, float amount, float[] amounts) in cases)
+        {
+            using DecodedImage two = CompareExport.Mix(At(first), At(second), 7, 5, kind, amount, 1, 1, ToneSettings.Default);
+            using DecodedImage several = CompareExport.Mix([At(first), At(second)], 7, 5, kind, amounts, amount, 1, 1, ToneSettings.Default);
+            for (int y = 0; y < 5; y++)
+            for (int x = 0; x < 7; x++)
+                Assert.Equal(Pixels.At(two, x, y), Pixels.At(several, x, y));
+        }
+    }
+
+    [Fact]
     public void TheDisplayControlsAreAppliedAsOnScreen()
     {
         var tone = new ToneSettings { Low = 0.25f, High = 0.75f, Gamma = 1 };
@@ -846,6 +907,23 @@ public class MetricsReportTests
             red.GetProperty("overThresholdPercent").GetDouble()));
         Assert.Equal(JsonValueKind.Null, green.GetProperty("psnr").ValueKind); // no error in green: no finite PSNR
         Assert.InRange(red.GetProperty("ssim").GetDouble(), 0.9, 1);
+    }
+
+    [Fact]
+    public void TheNumbersOfSeveralImagesAgainstOneAreOneTableOrAnArray()
+    {
+        MetricsResult result = Sample();
+        MetricsEntry[] entries = [new(result, "ref.jpg", "b.jpg", 4), new(result, "ref.jpg", "c.png", 1000)];
+        string[] lines = MetricsReport.Csv(entries).Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(1 + 2 * 5, lines.Length); // one header, five channels each
+        Assert.Single(lines, line => line.StartsWith("first,"));
+        Assert.StartsWith("ref.jpg,c.png,4,2,20,20,400,8-bit,255,1000,red,", lines[6]);
+        Assert.Equal(MetricsReport.Csv(result, "ref.jpg", "b.jpg", 4), MetricsReport.Csv(entries[..1]));
+
+        using JsonDocument json = JsonDocument.Parse(MetricsReport.Json(entries));
+        Assert.Equal(JsonValueKind.Array, json.RootElement.ValueKind);
+        Assert.Equal(["b.jpg", "c.png"], json.RootElement.EnumerateArray().Select(entry => entry.GetProperty("second").GetString()));
+        Assert.Equal(MetricsReport.Json(result, "ref.jpg", "b.jpg", 4), MetricsReport.Json(entries[..1])); // of one, the one object as before
     }
 }
 

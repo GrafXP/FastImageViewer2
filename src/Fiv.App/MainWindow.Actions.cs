@@ -55,6 +55,7 @@ internal sealed unsafe partial class MainWindow
         ("U", "measure: lines, rectangles and circles on the image, and a panel with their numbers; again to put them away"),
         ("While measuring", ""),
         ("L / R / C", "then a drag: a line / a rectangle / a circle (from its centre)"),
+        ("Shift+C", "then three clicks: a circle through three points of its outline"),
         ("Shift+drag", "the line level, upright or diagonal; the rectangle a square"),
         ("Drag a handle / the outline", "change a measurement / move it (a circle: by its centre)"),
         ("Click a measurement", "select it: a line shows the values along it, an area its numbers and histogram"),
@@ -76,11 +77,13 @@ internal sealed unsafe partial class MainWindow
         ("C", "compare the selected images, or this one with the next; again to stop"),
         ("Drop 2 to 16 files", "compare them; with Ctrl held, add them to the comparison"),
         ("While comparing", ""),
-        ("M / Shift+M", "mode: single, side by side, grid, split, blend, checkerboard, difference, SSIM"),
+        ("M / Shift+M", "mode: single, side by side, grid, split, blend, overlay, checkerboard, difference, SSIM"),
         ("1 ... 9", "go to that image; held down, only until released"),
         ("Left / Right, Home / End", "previous / next, first / last image of the set"),
-        ("X / K", "swap the two images / blink between them"),
-        ("Up / Down", "divider, opacity, cell size, blink rate or gain (with Shift: finer); while aligning, see below"),
+        ("X / Shift+X", "the next / previous image in the views becomes the reference (of two: swap them)"),
+        ("Ctrl+1 ... 9", "take that image out of the views that show several, or back in"),
+        ("K", "blink between the last two images"),
+        ("Up / Down", "divider, opacity (in the overlay the active image's), cell size, blink rate or gain (with Shift: finer); while aligning, see below"),
         ("L", "link zoom and position of the panes, or not"),
         ("P", "compare panel"),
         ("", ""),
@@ -91,20 +94,20 @@ internal sealed unsafe partial class MainWindow
         ("N", "metrics panel: MAE, MSE, PSNR, largest error, share over the threshold, SSIM, histogram"),
         ("R / Shift+R", "drag a region for the numbers (also Shift+drag) / the whole image again"),
         ("Ctrl+C", "copy what the panes show"),
-        ("Ctrl+S", "save the two-image view at full resolution (PNG)"),
+        ("Ctrl+S", "save the split, blend, overlay, checkerboard, difference or SSIM view at full resolution (PNG)"),
         ("Ctrl+D", "save the difference values (32-bit float TIFF)"),
-        ("Ctrl+Shift+S", "save the numbers (CSV or JSON)"),
+        ("Ctrl+Shift+S", "save the numbers of every image against the reference (CSV or JSON)"),
         ("", ""),
-        ("A", "align: a panel, and drags and the keys below move the second image instead of the view"),
-        ("Shift+A", "align the second image to the first automatically"),
-        ("Q", "fine align: refine the pose the image has"),
+        ("A", "align: a panel, and drags and the keys below move the ticked images instead of the view"),
+        ("Shift+A", "align the ticked images to the reference automatically, one after the other"),
+        ("Q", "fine align: refine the poses the images have"),
         ("While aligning", ""),
-        ("Drag, arrows", "move the image; arrows by 1 pixel, with Shift by 0.1"),
-        ("Shift+drag", "turn it about its centre, as far as the mouse goes round it"),
-        ("PgUp / PgDn, Shift+wheel", "turn it by 0.1 degrees; the keys with Shift, the wheel with Ctrl as well: by 0.01"),
-        ("Home / End, Ctrl+wheel", "make it smaller / larger by 0.1 %, the keys with Shift by 0.01 %"),
+        ("Drag, arrows", "move the images; arrows by 1 pixel, with Shift by 0.1"),
+        ("Shift+drag", "turn each about its centre, as far as the mouse goes round it"),
+        ("PgUp / PgDn, Shift+wheel", "turn them by 0.1 degrees; the keys with Shift, the wheel with Ctrl as well: by 0.01"),
+        ("Home / End, Ctrl+wheel", "make them smaller / larger by 0.1 %, the keys with Shift by 0.01 %"),
         ("Region... in the panel", "then a drag: a rectangle for the automatic alignment to go by"),
-        ("Backspace", "back to where it was before any aligning"),
+        ("Backspace", "back to where they were before any aligning"),
         ("Ctrl+E", "save the aligned image (PNG, or TIFF for float)"),
     ];
 
@@ -336,7 +339,25 @@ internal sealed unsafe partial class MainWindow
             }
             ImGui.EndMenu();
         }
-        if (ImGui.MenuItem("Swap the two images"u8, "X"u8, _pick.Swapped)) _pick.Swapped = !_pick.Swapped;
+        if (ImGui.MenuItem(_orderCount == 2 ? "Swap the two images"u8 : "Next reference image"u8, "X"u8)) _deferred = () => StepReference(1);
+        if (ImGui.BeginMenu("Images in the views"u8))
+        {
+            // The images the views that show several take in; the reference stays in.
+            for (int i = 0; i < _compare.Count; i++)
+            {
+                int n = Utf8.TryWrite(_utf8, $"{i + 1}  {Path.GetFileName(_compare[i].Path.AsSpan())}{(i == _pick.Reference ? "   (reference)" : "")}", out int written) ? written : 0;
+                _utf8[n] = 0;
+                int item = i;
+                fixed (byte* label = _utf8)
+                    if (ImGui.MenuItem(label, (byte*)null, _pick.IsShown(i), i != _pick.Reference)) _deferred = () => SetShown(item, !_pick.IsShown(item));
+            }
+            ImGui.EndMenu();
+        }
+        if (_pick.Active != _pick.Reference && ImGui.MenuItem("Make this image the reference"u8))
+        {
+            int active = _pick.Active;
+            _deferred = () => SetReference(active);
+        }
         if (ImGui.MenuItem("Blink"u8, "K"u8, _blink)) _deferred = ToggleBlink;
         if (ImGui.MenuItem("Link zoom and position"u8, "L"u8, _linked)) SetLinked(!_linked);
         if (ImGui.MenuItem("Compare panel"u8, "P"u8, _showComparePanel)) _showComparePanel = !_showComparePanel;
@@ -345,7 +366,7 @@ internal sealed unsafe partial class MainWindow
         if (_region != null && ImGui.MenuItem("Numbers of the whole image"u8, "Shift+R"u8)) _region = null;
         if (ImGui.BeginMenu("Align"u8))
         {
-            if (ImGui.MenuItem("Align panel: move the second image by hand"u8, "A"u8, _alignMode)) SetAlignMode(!_alignMode);
+            if (ImGui.MenuItem("Align panel: move images onto the reference by hand"u8, "A"u8, _alignMode)) SetAlignMode(!_alignMode);
             if (ImGui.MenuItem("Align automatically"u8, "Shift+A"u8, false, !_alignRunning)) _deferred = () => AutoAlign(fine: false);
             if (ImGui.MenuItem("Fine align from the pose it has"u8, "Q"u8, false, !_alignRunning)) _deferred = () => AutoAlign(fine: true);
             if (ImGui.MenuItem("Region for the alignment to go by: drag a rectangle"u8, default(ReadOnlySpan<byte>), _alignRegionArmed)) _alignRegionArmed = !_alignRegionArmed;

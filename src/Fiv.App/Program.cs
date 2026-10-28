@@ -77,6 +77,7 @@ internal sealed class Options
         "grid" => Fiv.Comparing.CompareMode.Grid,
         "split" => Fiv.Comparing.CompareMode.Split,
         "blend" => Fiv.Comparing.CompareMode.Blend,
+        "overlay" => Fiv.Comparing.CompareMode.Overlay,
         "checker" or "checkerboard" => Fiv.Comparing.CompareMode.Checker,
         "diff" or "difference" => Fiv.Comparing.CompareMode.Difference,
         "ssim" => Fiv.Comparing.CompareMode.Ssim,
